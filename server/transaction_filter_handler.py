@@ -9,16 +9,14 @@ from protocol.messages import DatasetType
 class TransactionFilterHandler(Thread):
     """Handler for consuming transactions from RabbitMQ, filtering by years 2024-2025, and routing to output queues"""
 
-    def __init__(self, server_callbacks, cleanup_callback=None):
+    def __init__(self, cleanup_callback=None):
         """
         Initialize the transaction filter handler
 
         Args:
-            server_callbacks: Dictionary with callback functions to server methods
             cleanup_callback: Function to call when handler finishes
         """
         super().__init__(daemon=True)
-        self._server_callbacks = server_callbacks
         self._cleanup_callback = cleanup_callback
         self._shutdown_requested = False
         self._queue_manager = None

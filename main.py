@@ -1,82 +1,33 @@
 #!/usr/bin/env python3
 
-from configparser import ConfigParser
-from server.server import Server
+from server.filter_node import FilterNode
 from common.config import get_config
 import logging
-import os
-import sys
-
-
-def initialize_config():
-    """Parse env variables or config file to find program config params
-
-    Function that search and parse program configuration parameters in the
-    program environment variables first and the in a config file.
-    If at least one of the config parameters is not found a KeyError exception
-    is thrown. If a parameter could not be parsed, a ValueError is thrown.
-    If parsing succeeded, the function returns a ConfigParser object
-    with config parameters
-    """
-
-    config = ConfigParser(os.environ)
-    # If config.ini does not exists original config object is not modified
-    config.read("config.ini")
-
-    config_params = {}
-    try:
-        config_params["port"] = int(
-            os.getenv("SERVER_PORT", config["DEFAULT"]["SERVER_PORT"])
-        )
-        config_params["listen_backlog"] = int(
-            os.getenv(
-                "SERVER_LISTEN_BACKLOG", config["DEFAULT"]["SERVER_LISTEN_BACKLOG"]
-            )
-        )
-        config_params["logging_level"] = os.getenv(
-            "LOGGING_LEVEL", config["DEFAULT"]["LOGGING_LEVEL"]
-        )
-
-    except KeyError as e:
-        raise KeyError("Key was not found. Error: {} .Aborting server".format(e))
-    except ValueError as e:
-        raise ValueError(
-            "Key could not be parsed. Error: {}. Aborting server".format(e)
-        )
-
-    return config_params
 
 
 def main():
-    # Load configuration using new config system
     config = get_config()
-    server_config = config.get_server_config()
     filter_config = config.get_filter_config()
     logging_level = config.get_logging_level()
 
     initialize_log(logging_level)
 
-    # Log config parameters at the beginning of the program to verify the configuration
-    # of the component
     logging.info(
-        f"action: config | result: success | port: {server_config['port']} | "
-        f"listen_backlog: {server_config['listen_backlog']} | "
+        f"action: filter_node_config | result: success | "
         f"input_queue: {filter_config['input_queue']} | "
         f"output_queues: {filter_config['output_queues']}"
     )
 
-    # Initialize server and start server loop
-    server = Server(server_config["port"], server_config["listen_backlog"])
+    filter_node = FilterNode()
 
     try:
-        server.run()
+        filter_node.run()
     except KeyboardInterrupt:
         logging.info(
-            "action: shutdown | result: in_progress | msg: received keyboard interrupt"
+            "action: filter_node_shutdown | result: in_progress | msg: received keyboard interrupt"
         )
-        # The server's signal handler will handle the graceful shutdown
     except Exception as e:
-        logging.error(f"action: server_main | result: fail | error: {e}")
+        logging.error(f"action: filter_node_main | result: fail | error: {e}")
 
 
 def initialize_log(logging_level):

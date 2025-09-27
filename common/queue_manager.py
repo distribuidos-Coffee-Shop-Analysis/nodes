@@ -112,7 +112,7 @@ class QueueManager:
             logging.error(f"action: rabbitmq_disconnect | result: fail | error: {e}")
 
     def send_dataset_batch(self, batch_message):
-        """Route dataset batch to appropriate input queue based on dataset type"""
+        """Route dataset batch to appropriate input queue based on dataset type (for compatibility)"""
         try:
             queue_name = self.input_queue_mapping.get(batch_message.dataset_type)
             if not queue_name:

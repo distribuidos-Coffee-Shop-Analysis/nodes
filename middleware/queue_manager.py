@@ -2,13 +2,22 @@ import pika
 import logging
 import json
 from protocol.messages import DatasetType, _create_record_from_string
-from .config import get_config
+from ..common.config import get_config
+from middleware.middleware import (
+    MessageMiddleware,
+    MessageMiddlewareDisconnectedError,
+    MessageMiddlewareMessageError,
+    MessageMiddlewareCloseError,
+    MessageMiddlewareDeleteError,
+)
 
 
-class QueueManager:
+class QueueManager(MessageMiddleware):
     """Manages RabbitMQ connections and queue operations for the filter node"""
 
-    def __init__(self, host=None, port=None, username=None, password=None):
+    def __init__(
+        self, host=None, queue_name=None, port=None, username=None, password=None
+    ):
         # Load configuration
         config = get_config()
         rabbitmq_config = config.get_rabbitmq_config()
@@ -21,10 +30,13 @@ class QueueManager:
         self.password = password or rabbitmq_config["password"]
         self.connection = None
         self.channel = None
+        self._consuming = False
+        self._consumer_tag = None
 
-        # Configure queues from config file
+        # Configure input queue and output exchanges from config file
         self.input_queue = filter_config["input_queue"]
-        self.output_queues = filter_config["output_queues"]
+        self.transactions_exchange = filter_config["transactions_exchange"]
+        self.transaction_items_exchange = filter_config["transaction_items_exchange"]
 
         # Create input queue mapping
         self.input_queue_mapping = {
@@ -32,49 +44,11 @@ class QueueManager:
             DatasetType.TRANSACTION_ITEMS: self.input_queue,
         }
 
-        # Create output queue mapping based on business logic
-        # TRANSACTIONS go to q1q3_queue and q4_queue
-        # TRANSACTION_ITEMS go to q2_queue only
-        self.output_queue_mapping = self._create_output_mapping()
-
         logging.info(
             f"action: queue_manager_init | input_queue: {self.input_queue} | "
-            f"output_queues: {self.output_queues} | "
-            f"output_mapping: {self.output_queue_mapping}"
+            f"transactions_exchange: {self.transactions_exchange} | "
+            f"transaction_items_exchange: {self.transaction_items_exchange} | "
         )
-
-    def _create_output_mapping(self):
-        """Create output queue mapping based on dataset types and configured queues"""
-        q1q3_queue = None
-        q2_queue = None
-        q4_queue = None
-
-        for queue_name in self.output_queues:
-            if "q1q3" in queue_name.lower() or "q1_q3" in queue_name.lower():
-                q1q3_queue = queue_name
-            elif "q2" in queue_name.lower() and "q1" not in queue_name.lower():
-                q2_queue = queue_name
-            elif "q4" in queue_name.lower():
-                q4_queue = queue_name
-
-        output_mapping = {}
-
-        # TRANSACTIONS -> q1q3_queue and q4_queue
-        if q1q3_queue:
-            output_mapping.setdefault(DatasetType.TRANSACTIONS, []).append(q1q3_queue)
-        if q4_queue:
-            output_mapping.setdefault(DatasetType.TRANSACTIONS, []).append(q4_queue)
-
-        # TRANSACTION_ITEMS -> q2_queue only
-        if q2_queue:
-            output_mapping[DatasetType.TRANSACTION_ITEMS] = [q2_queue]
-
-        if not output_mapping.get(DatasetType.TRANSACTIONS):
-            logging.warning("No output queues found for TRANSACTIONS dataset")
-        if not output_mapping.get(DatasetType.TRANSACTION_ITEMS):
-            logging.warning("No output queues found for TRANSACTION_ITEMS dataset")
-
-        return output_mapping
 
     def connect(self):
         """Establish connection to RabbitMQ"""
@@ -89,12 +63,24 @@ class QueueManager:
             # Declare input queue
             self.channel.queue_declare(queue=self.input_queue, durable=True)
 
-            # Declare all output queues
-            for queue_name in self.output_queues:
-                self.channel.queue_declare(queue=queue_name, durable=True)
+            # Declare all output exchanges
+            if self.transactions_exchange:
+                self.channel.exchange_declare(
+                    exchange=self.transactions_exchange,
+                    exchange_type="direct",  # Direct exchange for specific routing
+                    durable=True,
+                )
+            if self.transaction_items_exchange:
+                self.channel.exchange_declare(
+                    exchange=self.transaction_items_exchange,
+                    exchange_type="direct",  # Direct exchange for specific routing
+                    durable=True,
+                )
 
             logging.info(
-                f"action: rabbitmq_connect | result: success | host: {self.host}"
+                f"action: rabbitmq_connect | result: success | host: {self.host} | "
+                f"input_queue: {self.input_queue} | transactions_exchange: {self.transactions_exchange} | "
+                f"transaction_items_exchange: {self.transaction_items_exchange}"
             )
             return True
 
@@ -194,14 +180,9 @@ class QueueManager:
                 f"action: start_consuming_transactions | result: fail | error: {e}"
             )
 
-    def send_filtered_batch(self, queue_name, dataset_type, records, eof):
-        """Send filtered batch to specific output queue by name"""
+    def send_filtered_batch(self, exchange_name, dataset_type, records, eof):
+        """Send filtered batch to specific output exchange by name"""
         try:
-            if queue_name not in self.output_queues:
-                raise ValueError(
-                    f"Queue '{queue_name}' is not in configured output queues: {self.output_queues}"
-                )
-
             # Serialize the filtered batch message
             message_data = {
                 "dataset_type": dataset_type,
@@ -212,8 +193,8 @@ class QueueManager:
             message_body = json.dumps(message_data)
 
             self.channel.basic_publish(
-                exchange="",
-                routing_key=queue_name,
+                exchange=exchange_name,
+                routing_key="",  # No specific routing key needed for direct exchange
                 body=message_body,
                 properties=pika.BasicProperties(
                     delivery_mode=2
@@ -221,7 +202,7 @@ class QueueManager:
             )
 
             logging.info(
-                f"action: send_filtered_batch | result: success | queue: {queue_name} | "
+                f"action: send_filtered_batch | result: success | exchange: {exchange_name} | "
                 f"original_type: {dataset_type} | "
                 f"record_count: {len(records)} | eof: {eof}"
             )
@@ -232,39 +213,32 @@ class QueueManager:
             logging.error(f"action: send_filtered_batch | result: fail | error: {e}")
             return False
 
-    def get_output_queues_for_dataset(self, dataset_type):
-        """Get the list of output queues for a specific dataset type"""
-        return self.output_queue_mapping.get(dataset_type, [])
-
-    def send_to_dataset_output_queues(self, dataset_type, records, eof):
-        """Send filtered batch to all appropriate output queues for a dataset type"""
-        output_queues = self.get_output_queues_for_dataset(dataset_type)
-
-        if not output_queues:
+    def send_to_dataset_output_exchanges(self, dataset_type, records, eof):
+        """Send filtered batch to all appropriate output exchanges for a dataset type"""
+        if dataset_type == DatasetType.TRANSACTIONS:
+            exchange = self.transactions_exchange
+        elif dataset_type == DatasetType.TRANSACTION_ITEMS:
+            exchange = self.transaction_items_exchange 
+        else:
             logging.warning(
-                f"action: send_to_dataset_output_queues | result: no_queues | "
-                f"dataset_type: {dataset_type}"
+                f"action: send_to_dataset_output_exchanges | result: fail | "
+                f"error: DATASET TYPE: {dataset_type} NOT SUPPORTED"
             )
             return False
 
-        success_count = 0
-        total_queues = len(output_queues)
-
-        for queue_name in output_queues:
-            success = self.send_filtered_batch(queue_name, dataset_type, records, eof)
-            if success:
-                success_count += 1
-
-        if success_count == total_queues:
+        success = self.send_filtered_batch(
+            exchange, dataset_type, records, eof
+        )
+        if success:
             logging.info(
-                f"action: send_to_dataset_output_queues | result: success | "
-                f"dataset_type: {dataset_type} | queues_sent: {success_count}/{total_queues}"
+                f"action: send_to_dataset_output_exchanges | result: success | "
+                f"dataset_type: {dataset_type}"
             )
             return True
         else:
             logging.error(
-                f"action: send_to_dataset_output_queues | result: partial_fail | "
-                f"dataset_type: {dataset_type} | queues_sent: {success_count}/{total_queues}"
+                f"action: send_to_dataset_output_exchanges | result: partial_fail | "
+                f"dataset_type: {dataset_type}"
             )
             return False
 
@@ -276,3 +250,48 @@ class QueueManager:
             logging.info("action: stop_consuming | result: success")
         except Exception as e:
             logging.error(f"action: stop_consuming | result: fail | error: {e}")
+
+    # MessageMiddleware interface methods
+    def start_consuming(self, callback):
+        """Start consuming messages - delegates to start_consuming_transactions"""
+        self.start_consuming_transactions(callback)
+
+    def send(self, message):
+        """Send message to default transactions exchange (MessageMiddleware interface)"""
+        try:
+            self.channel.basic_publish(
+                exchange=self.transactions_exchange,  
+                routing_key="",
+                body=message,
+                properties=pika.BasicProperties(
+                    delivery_mode=2
+                ),  # Make message persistent
+            )
+            return True
+        except Exception as e:
+            logging.error(f"action: send | result: fail | error: {e}")
+            return False
+
+    def close(self):
+        """Close the connection"""
+        try:
+            if self.connection and not self.connection.is_closed:
+                self.connection.close()
+            logging.info("action: close | result: success")
+        except Exception as e:
+            logging.error(f"action: close | result: fail | error: {e}")
+
+    def delete(self, exchange_name=None):
+        """Delete an exchange"""
+        try:
+            if self.channel:
+                # Use provided exchange or default to transactions_exchange
+                target_exchange = exchange_name or self.transactions_exchange
+                self.channel.exchange_delete(exchange=target_exchange)
+            logging.info(
+                f"action: delete | result: success | exchange: {target_exchange}"
+            )
+        except Exception as e:
+            logging.error(
+                f"action: delete | result: fail | exchange: {target_exchange} | error: {e}"
+            )

@@ -28,16 +28,6 @@ class Config:
             logging.error(f"action: config_load | result: fail | error: {e}")
             raise
 
-    def get_server_config(self):
-        """Get server configuration"""
-        return {
-            "port": self.config.getint("DEFAULT", "SERVER_PORT", fallback=12345),
-            "ip": self.config.get("DEFAULT", "SERVER_IP", fallback="localhost"),
-            "listen_backlog": self.config.getint(
-                "DEFAULT", "SERVER_LISTEN_BACKLOG", fallback=5
-            ),
-        }
-
     def get_rabbitmq_config(self):
         """Get RabbitMQ configuration"""
         return {
@@ -54,18 +44,19 @@ class Config:
         input_queue = self.config.get(
             "DEFAULT", "INPUT_QUEUE", fallback="transactions_queue"
         )
-        output_queues_str = self.config.get(
-            "DEFAULT", "OUTPUT_QUEUES", fallback="q1_queue,q2_queue,q3_queue,q4_queue"
+        transactions_exchange = self.config.get(
+            "DEFAULT", "TRANSACTIONS_EXCHANGE", fallback="transactions_exchange"
         )
-
-        # Parse output queues (comma-separated list)
-        output_queues = [
-            queue.strip() for queue in output_queues_str.split(",") if queue.strip()
-        ]
+        transaction_items_exchange = self.config.get(
+            "DEFAULT",
+            "TRANSACTION_ITEMS_EXCHANGE",
+            fallback="transaction_items_exchange",
+        )
 
         return {
             "input_queue": input_queue,
-            "output_queues": output_queues,
+            "transactions_exchange": transactions_exchange,
+            "transaction_items_exchange": transaction_items_exchange,
         }
 
     def get_logging_level(self):

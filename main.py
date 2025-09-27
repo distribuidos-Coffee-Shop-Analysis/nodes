@@ -1,23 +1,10 @@
 #!/usr/bin/env python3
 
 from server.filter_node import FilterNode
-from common.config import get_config
 import logging
 
 
 def main():
-    config = get_config()
-    filter_config = config.get_filter_config()
-    logging_level = config.get_logging_level()
-
-    initialize_log(logging_level)
-
-    logging.info(
-        f"action: filter_node_config | result: success | "
-        f"input_queue: {filter_config['input_queue']} | "
-        f"output_queues: {filter_config['output_queues']}"
-    )
-
     filter_node = FilterNode()
 
     try:

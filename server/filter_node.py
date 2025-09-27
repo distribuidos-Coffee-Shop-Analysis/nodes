@@ -1,17 +1,15 @@
 import logging
 import threading
-from common.queue_manager import QueueManager
+from middleware.queue_manager import QueueManager
 from .transaction_filter_handler import TransactionFilterHandler
 
 
 class FilterNode:
     """Simple filter node that processes transactions from RabbitMQ queues"""
-    
+
     def __init__(self):
         # Initialize queue manager for RabbitMQ communication
         self._queue_manager = QueueManager()
-
-        # Transaction filter handler management
         self._transaction_filter_handler = None
         self._handlers_lock = threading.Lock()
         self._shutdown_requested = False
@@ -27,29 +25,33 @@ class FilterNode:
                 )
                 return
 
-            # Start transaction filter handler
             self._start_transaction_filter_handler()
 
-            logging.info("action: filter_node_started | result: success | msg: processing transactions...")
-            
+            logging.info(
+                "action: filter_node_started | result: success | msg: processing transactions..."
+            )
+
             # Keep the main thread alive while the filter handler processes
             try:
                 while not self._shutdown_requested:
-                    if self._transaction_filter_handler and self._transaction_filter_handler.is_alive():
-                        self._transaction_filter_handler.join(timeout=1.0) # Verify every second if still alive
+                    if (
+                        self._transaction_filter_handler
+                        and self._transaction_filter_handler.is_alive()
+                    ):
+                        self._transaction_filter_handler.join(
+                            timeout=1.0
+                        )  # Verify every second if still alive
                     else:
                         break
             except KeyboardInterrupt:
                 logging.info("action: filter_node_shutdown | result: requested")
-                
+
         except KeyboardInterrupt:
             logging.info("action: filter_node_shutdown | result: in_progress")
             self._shutdown()
         except Exception as e:
             logging.error(f"action: filter_node_run | result: fail | error: {e}")
             self._shutdown()
-
-
 
     def _start_transaction_filter_handler(self):
         """Start the transaction filter handler"""
@@ -101,12 +103,12 @@ class FilterNode:
                     f"action: filter_node_shutdown | result: fail | msg: error shutting down filter handler | error: {e}"
                 )
 
-        # Disconnect from RabbitMQ
+        # Close RabbitMQ connection
         try:
-            self._queue_manager.disconnect()
+            self._queue_manager.close()
         except Exception as e:
             logging.error(
-                f"action: filter_node_shutdown | result: fail | msg: error disconnecting from RabbitMQ | error: {e}"
+                f"action: filter_node_shutdown | result: fail | msg: error closing RabbitMQ connection | error: {e}"
             )
 
         logging.info(

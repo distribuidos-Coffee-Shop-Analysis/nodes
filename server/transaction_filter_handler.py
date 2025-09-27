@@ -1,8 +1,6 @@
 import logging
 from threading import Thread
-from datetime import datetime
-from common.queue_manager import QueueManager
-from common.config import get_config
+from middleware.queue_manager import QueueManager
 from protocol.messages import DatasetType
 
 
@@ -21,18 +19,9 @@ class TransactionFilterHandler(Thread):
         self._shutdown_requested = False
         self._queue_manager = None
 
-        # Load configuration
-        config = get_config()
-        filter_config = config.get_filter_config()
-
         # Filter configuration
         self._min_year = 2024
         self._max_year = 2025
-        self._output_queues = filter_config["output_queues"]
-
-        logging.info(
-            f"action: transaction_filter_handler_init | output_queues: {self._output_queues}"
-        )
 
     def request_shutdown(self):
         """Request graceful shutdown of the handler"""
@@ -57,9 +46,7 @@ class TransactionFilterHandler(Thread):
                 return
 
             # Start consuming transactions with callback (this blocks until shutdown)
-            self._queue_manager.start_consuming_transactions(
-                self._handle_transaction_batch
-            )
+            self._queue_manager.start_consuming(self._handle_transaction_batch)
 
         except Exception as e:
             if not self._shutdown_requested:  # Only log as error if not shutting down
@@ -113,7 +100,7 @@ class TransactionFilterHandler(Thread):
             if (
                 filtered_records or eof
             ):  # Send even empty batches if EOF to signal completion
-                self._route_to_output_queues(dataset_type, filtered_records, eof)
+                self._route_to_output_exchanges(dataset_type, filtered_records, eof)
 
         except Exception as e:
             logging.error(
@@ -167,7 +154,7 @@ class TransactionFilterHandler(Thread):
 
         return filtered_records
 
-    def _route_to_output_queues(self, dataset_type, records, eof):
+    def _route_to_output_exchanges(self, dataset_type, records, eof):
         """
         Route filtered records to the appropriate output queues based on dataset type
 
@@ -178,17 +165,14 @@ class TransactionFilterHandler(Thread):
         """
         try:
             # Use the dataset-specific routing from QueueManager
-            success = self._queue_manager.send_to_dataset_output_queues(
+            success = self._queue_manager.send_to_dataset_output_exchanges(
                 dataset_type, records, eof
             )
 
             if success:
-                output_queues = self._queue_manager.get_output_queues_for_dataset(
-                    dataset_type
-                )
                 logging.info(
                     f"action: batch_routed | result: success | "
-                    f"dataset_type: {dataset_type} | output_queues: {output_queues} | "
+                    f"dataset_type: {dataset_type} | "
                     f"record_count: {len(records)} | eof: {eof}"
                 )
             else:
@@ -198,13 +182,15 @@ class TransactionFilterHandler(Thread):
                 )
 
         except Exception as e:
-            logging.error(f"action: route_to_output_queues | result: fail | error: {e}")
+            logging.error(
+                f"action: route_to_output_exchanges | result: fail | error: {e}"
+            )
 
     def _cleanup(self):
         """Cleanup resources and notify server"""
         try:
             if self._queue_manager:
-                self._queue_manager.disconnect()
+                self._queue_manager.close()
 
             if self._cleanup_callback:
                 self._cleanup_callback(self)

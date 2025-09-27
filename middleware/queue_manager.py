@@ -1,7 +1,7 @@
 import pika
 import logging
 import json
-from protocol.messages import DatasetType, _create_record_from_string
+from protocol.messages import MESSAGE_TYPE_BATCH, BatchMessage, DatasetType, _create_record_from_string
 from ..common.config import get_config
 from middleware.middleware import (
     MessageMiddleware,
@@ -143,20 +143,15 @@ class QueueManager(MessageMiddleware):
 
             def wrapper(ch, method, properties, body):
                 try:
-                    # Parse the transaction message
-                    message_data = json.loads(body.decode("utf-8"))
-                    dataset_type = message_data["dataset_type"]
-                    record_strings = message_data["records"]
-                    eof = message_data.get("eof", False)
+                    msg_type = body[0]
 
-                    # Convert strings back to record objects
-                    records = []
-                    for record_string in record_strings:
-                        record = _create_record_from_string(dataset_type, record_string)
-                        records.append(record)
+                    if msg_type == MESSAGE_TYPE_BATCH:
+                        batch_message = BatchMessage.from_data(body)
+                    else:
+                        raise ValueError(f"Unknown message type: {msg_type}")
 
                     # Call the callback with the parsed data
-                    callback(dataset_type, records, eof)
+                    callback(batch_message)
 
                     # Acknowledge the message
                     ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -180,22 +175,30 @@ class QueueManager(MessageMiddleware):
                 f"action: start_consuming_transactions | result: fail | error: {e}"
             )
 
-    def send_filtered_batch(self, exchange_name, dataset_type, records, eof):
+    def encode_to_byte_array(batch_message):
+        # [MessageType][DatasetType][EOF][RecordCount][Records...]
+        data = bytearray()
+        data.append(MESSAGE_TYPE_BATCH)
+        data.append(batch_message.dataset_type)
+
+        # Build content: EOF|RecordCount|Record1|Record2|...
+        content = f"{1 if batch_message.eof else 0}|{len(batch_message.records)}"
+        for record in batch_message.records:
+            content += "|" + record.serialize()
+
+        data.extend(content.encode("utf-8"))
+
+        return data
+
+    def send_filtered_batch(self, exchange_name, batch_message):
         """Send filtered batch to specific output exchange by name"""
         try:
-            # Serialize the filtered batch message
-            message_data = {
-                "dataset_type": dataset_type,
-                "records": [record.serialize() for record in records],
-                "eof": eof,
-            }
-
-            message_body = json.dumps(message_data)
+            byte_array = self.encode_to_byte_array(batch_message)
 
             self.channel.basic_publish(
                 exchange=exchange_name,
                 routing_key="",  # No specific routing key needed for direct exchange
-                body=message_body,
+                body=byte_array,
                 properties=pika.BasicProperties(
                     delivery_mode=2
                 ),  # Make message persistent
@@ -203,8 +206,8 @@ class QueueManager(MessageMiddleware):
 
             logging.info(
                 f"action: send_filtered_batch | result: success | exchange: {exchange_name} | "
-                f"original_type: {dataset_type} | "
-                f"record_count: {len(records)} | eof: {eof}"
+                f"original_type: {batch_message.dataset_type} | "
+                f"record_count: {len(batch_message.records)} | eof: {batch_message.eof}"
             )
 
             return True
@@ -213,32 +216,32 @@ class QueueManager(MessageMiddleware):
             logging.error(f"action: send_filtered_batch | result: fail | error: {e}")
             return False
 
-    def send_to_dataset_output_exchanges(self, dataset_type, records, eof):
+    def send_to_dataset_output_exchanges(self, batch_message):
         """Send filtered batch to all appropriate output exchanges for a dataset type"""
-        if dataset_type == DatasetType.TRANSACTIONS:
+        if batch_message.dataset_type == DatasetType.TRANSACTIONS:
             exchange = self.transactions_exchange
-        elif dataset_type == DatasetType.TRANSACTION_ITEMS:
-            exchange = self.transaction_items_exchange 
+        elif batch_message.dataset_type == DatasetType.TRANSACTION_ITEMS:
+            exchange = self.transaction_items_exchange
         else:
             logging.warning(
                 f"action: send_to_dataset_output_exchanges | result: fail | "
-                f"error: DATASET TYPE: {dataset_type} NOT SUPPORTED"
+                f"error: DATASET TYPE: {batch_message.dataset_type} NOT SUPPORTED"
             )
             return False
 
         success = self.send_filtered_batch(
-            exchange, dataset_type, records, eof
+            exchange, batch_message
         )
         if success:
             logging.info(
                 f"action: send_to_dataset_output_exchanges | result: success | "
-                f"dataset_type: {dataset_type}"
+                f"dataset_type: {batch_message.dataset_type}"
             )
             return True
         else:
             logging.error(
                 f"action: send_to_dataset_output_exchanges | result: partial_fail | "
-                f"dataset_type: {dataset_type}"
+                f"dataset_type: {batch_message.dataset_type}"
             )
             return False
 

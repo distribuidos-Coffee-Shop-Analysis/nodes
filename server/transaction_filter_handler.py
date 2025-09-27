@@ -56,52 +56,40 @@ class TransactionFilterHandler(Thread):
         finally:
             self._cleanup()
 
-    def _handle_transaction_batch(self, dataset_type, records, eof):
+    def _handle_transaction_batch(self, batch_message):
         """
         Handle a transaction batch - filter by year and route to output queues
 
         Args:
-            dataset_type: The type of dataset (should be TRANSACTIONS or TRANSACTION_ITEMS)
-            records: List of record objects
-            eof: End of file flag
+            batch_message: The batch message containing dataset type, records, and EOF flag
         """
         if self._shutdown_requested:
             return
 
         try:
             # Validate dataset type - only process TRANSACTIONS and TRANSACTION_ITEMS
-            if dataset_type not in [
+            if batch_message.dataset_type not in [
                 DatasetType.TRANSACTIONS,
                 DatasetType.TRANSACTION_ITEMS,
             ]:
                 logging.info(
                     f"action: batch_dropped | result: success | "
-                    f"dataset_type: {dataset_type} | reason: invalid_dataset_type | "
-                    f"record_count: {len(records)}"
+                    f"dataset_type: {batch_message.dataset_type} | reason: invalid_dataset_type | "
+                    f"record_count: {len(batch_message.records)}"
                 )
                 return
 
             logging.info(
                 f"action: transaction_batch_received | result: success | "
-                f"dataset_type: {dataset_type} | record_count: {len(records)} | eof: {eof}"
+                f"dataset_type: {batch_message.dataset_type} | record_count: {len(batch_message.records)} | eof: {batch_message.eof}"
             )
 
             # Filter records by year (2024-2025)
-            filtered_records = self._filter_records_by_year(records)
+            filtered_records = self._filter_records_by_year(batch_message.records)
+            batch_message.records = filtered_records
 
-            if len(filtered_records) != len(records):
-                logging.info(
-                    f"action: records_filtered | result: success | "
-                    f"original_count: {len(records)} | filtered_count: {len(filtered_records)} | "
-                    f"dropped: {len(records) - len(filtered_records)}"
-                )
-
-            # Send filtered records to output queues
-            if (
-                filtered_records or eof
-            ):  # Send even empty batches if EOF to signal completion
-                self._route_to_output_exchanges(dataset_type, filtered_records, eof)
-
+            self._route_to_output_exchanges(batch_message)
+                
         except Exception as e:
             logging.error(
                 f"action: handle_transaction_batch | result: fail | error: {e}"
@@ -154,7 +142,7 @@ class TransactionFilterHandler(Thread):
 
         return filtered_records
 
-    def _route_to_output_exchanges(self, dataset_type, records, eof):
+    def _route_to_output_exchanges(self, batch_message):
         """
         Route filtered records to the appropriate output queues based on dataset type
 
@@ -165,21 +153,9 @@ class TransactionFilterHandler(Thread):
         """
         try:
             # Use the dataset-specific routing from QueueManager
-            success = self._queue_manager.send_to_dataset_output_exchanges(
-                dataset_type, records, eof
+            self._queue_manager.send_to_dataset_output_exchanges(
+                batch_message
             )
-
-            if success:
-                logging.info(
-                    f"action: batch_routed | result: success | "
-                    f"dataset_type: {dataset_type} | "
-                    f"record_count: {len(records)} | eof: {eof}"
-                )
-            else:
-                logging.error(
-                    f"action: batch_routed | result: fail | "
-                    f"dataset_type: {dataset_type}"
-                )
 
         except Exception as e:
             logging.error(

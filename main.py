@@ -2,6 +2,7 @@
 
 from configparser import ConfigParser
 from server.server import Server
+from common.config import get_config
 import logging
 import os
 import sys
@@ -47,22 +48,25 @@ def initialize_config():
 
 
 def main():
-    config_params = initialize_config()
-    logging_level = config_params["logging_level"]
-    port = config_params["port"]
-    listen_backlog = config_params["listen_backlog"]
+    # Load configuration using new config system
+    config = get_config()
+    server_config = config.get_server_config()
+    filter_config = config.get_filter_config()
+    logging_level = config.get_logging_level()
 
     initialize_log(logging_level)
 
     # Log config parameters at the beginning of the program to verify the configuration
     # of the component
-    logging.debug(
-        f"action: config | result: success | port: {port} | "
-        f"listen_backlog: {listen_backlog} | logging_level: {logging_level}"
+    logging.info(
+        f"action: config | result: success | port: {server_config['port']} | "
+        f"listen_backlog: {server_config['listen_backlog']} | "
+        f"input_queue: {filter_config['input_queue']} | "
+        f"output_queues: {filter_config['output_queues']}"
     )
 
     # Initialize server and start server loop
-    server = Server(port, listen_backlog)
+    server = Server(server_config["port"], server_config["listen_backlog"])
 
     try:
         server.run()

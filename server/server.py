@@ -4,7 +4,7 @@ import threading
 from protocol.protocol import send_batch_message
 from common.queue_manager import QueueManager
 from .listener import Listener
-from .query_replies_handler import QueryRepliesHandler
+from .transaction_filter_handler import TransactionFilterHandler
 
 
 class Server:
@@ -23,8 +23,8 @@ class Server:
             []
         )  # Store active client connections for sending replies
 
-        # Query replies handler management
-        self._query_replies_handler = None
+        # Transaction filter handler management
+        self._transaction_filter_handler = None
         self._handlers_lock = threading.Lock()
         self._shutdown_requested = False
 
@@ -48,8 +48,8 @@ class Server:
                 )
                 return
 
-            # Start query replies handler
-            self._start_query_replies_handler()
+            # Start transaction filter handler
+            self._start_transaction_filter_handler()
 
             # Create and start the listener
             listener = Listener(
@@ -88,32 +88,32 @@ class Server:
         except Exception as e:
             logging.error(f"action: handle_batch_message | result: fail | error: {e}")
 
-    def _start_query_replies_handler(self):
-        """Start the query replies handler"""
+    def _start_transaction_filter_handler(self):
+        """Start the transaction filter handler"""
         try:
-            self._query_replies_handler = QueryRepliesHandler(
+            self._transaction_filter_handler = TransactionFilterHandler(
                 server_callbacks=self._server_callbacks,
-                cleanup_callback=self._remove_query_handler,
+                cleanup_callback=self._remove_filter_handler,
             )
 
             with self._handlers_lock:
-                self._query_replies_handler.start()
+                self._transaction_filter_handler.start()
 
-            logging.info("action: query_replies_handler_started | result: success")
+            logging.info("action: transaction_filter_handler_started | result: success")
         except Exception as e:
             logging.error(
-                f"action: start_query_replies_handler | result: fail | error: {e}"
+                f"action: start_transaction_filter_handler | result: fail | error: {e}"
             )
 
-    def _remove_query_handler(self, handler):
-        """Remove the finished query replies handler"""
+    def _remove_filter_handler(self, handler):
+        """Remove the finished transaction filter handler"""
         try:
             with self._handlers_lock:
-                if self._query_replies_handler == handler:
-                    self._query_replies_handler = None
-            logging.debug("action: remove_query_handler | result: success")
+                if self._transaction_filter_handler == handler:
+                    self._transaction_filter_handler = None
+            logging.debug("action: remove_filter_handler | result: success")
         except Exception as e:
-            logging.error(f"action: remove_query_handler | result: fail | error: {e}")
+            logging.error(f"action: remove_filter_handler | result: fail | error: {e}")
 
     def _send_reply_to_clients(self, dataset_type, records, eof):
         """Send reply to all connected clients - callback for QueryRepliesHandler"""
@@ -156,18 +156,21 @@ class Server:
             "action: shutdown | result: in_progress | msg: starting graceful shutdown"
         )
 
-        # Shutdown query replies handler
-        if self._query_replies_handler and self._query_replies_handler.is_alive():
+        # Shutdown transaction filter handler
+        if (
+            self._transaction_filter_handler
+            and self._transaction_filter_handler.is_alive()
+        ):
             try:
-                self._query_replies_handler.request_shutdown()
-                self._query_replies_handler.join()
-                if self._query_replies_handler.is_alive():
+                self._transaction_filter_handler.request_shutdown()
+                self._transaction_filter_handler.join()
+                if self._transaction_filter_handler.is_alive():
                     logging.warning(
-                        "action: shutdown | result: fail | msg: query handler didn't stop gracefully"
+                        "action: shutdown | result: fail | msg: filter handler didn't stop gracefully"
                     )
             except Exception as e:
                 logging.error(
-                    f"action: shutdown | result: fail | msg: error shutting down query handler | error: {e}"
+                    f"action: shutdown | result: fail | msg: error shutting down filter handler | error: {e}"
                 )
 
         # Close all client connections

@@ -2,6 +2,7 @@ import logging
 from threading import Thread
 from datetime import datetime
 from common.queue_manager import QueueManager
+from common.config import get_config
 from protocol.messages import DatasetType
 
 
@@ -22,9 +23,18 @@ class TransactionFilterHandler(Thread):
         self._shutdown_requested = False
         self._queue_manager = None
 
+        # Load configuration
+        config = get_config()
+        filter_config = config.get_filter_config()
+
         # Filter configuration
         self._min_year = 2024
         self._max_year = 2025
+        self._output_queues = filter_config["output_queues"]
+
+        logging.info(
+            f"action: transaction_filter_handler_init | output_queues: {self._output_queues}"
+        )
 
     def request_shutdown(self):
         """Request graceful shutdown of the handler"""
@@ -161,38 +171,33 @@ class TransactionFilterHandler(Thread):
 
     def _route_to_output_queues(self, dataset_type, records, eof):
         """
-        Route filtered records to the appropriate output queues
+        Route filtered records to the appropriate output queues based on dataset type
 
         Args:
-            dataset_type: Original dataset type
+            dataset_type: Original dataset type (TRANSACTIONS -> q1q3_queue + q4_queue, TRANSACTION_ITEMS -> q2_queue)
             records: Filtered records
             eof: End of file flag
         """
         try:
-            # Send to all query queues (Q1, Q2, Q3, Q4) as per the filter node design
-            output_queues = [
-                DatasetType.Q1,
-                DatasetType.Q2,
-                DatasetType.Q3,
-                DatasetType.Q4,
-            ]
+            # Use the dataset-specific routing from QueueManager
+            success = self._queue_manager.send_to_dataset_output_queues(
+                dataset_type, records, eof
+            )
 
-            for output_queue in output_queues:
-                success = self._queue_manager.send_filtered_batch(
-                    output_queue, dataset_type, records, eof
+            if success:
+                output_queues = self._queue_manager.get_output_queues_for_dataset(
+                    dataset_type
                 )
-
-                if success:
-                    logging.info(
-                        f"action: batch_routed | result: success | "
-                        f"output_queue: {output_queue} | original_type: {dataset_type} | "
-                        f"record_count: {len(records)} | eof: {eof}"
-                    )
-                else:
-                    logging.error(
-                        f"action: batch_routed | result: fail | "
-                        f"output_queue: {output_queue} | original_type: {dataset_type}"
-                    )
+                logging.info(
+                    f"action: batch_routed | result: success | "
+                    f"dataset_type: {dataset_type} | output_queues: {output_queues} | "
+                    f"record_count: {len(records)} | eof: {eof}"
+                )
+            else:
+                logging.error(
+                    f"action: batch_routed | result: fail | "
+                    f"dataset_type: {dataset_type}"
+                )
 
         except Exception as e:
             logging.error(f"action: route_to_output_queues | result: fail | error: {e}")

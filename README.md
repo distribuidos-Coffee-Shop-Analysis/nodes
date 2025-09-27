@@ -42,8 +42,8 @@ El nodo lee de la cola `replies_queue` las respuestas procesadas (Q1-Q4) y las r
 
 ### Tipos de Mensaje
 
-- `MESSAGE_TYPE_BATCH = 2`: Mensajes de batch con datasets
-- `MESSAGE_TYPE_RESPONSE = 3`: Respuestas del servidor
+- `MESSAGE_TYPE_BATCH = 1`: Mensajes de batch con datasets
+- `MESSAGE_TYPE_RESPONSE = 2`: Respuestas del servidor
 
 ### Estructura de Records
 

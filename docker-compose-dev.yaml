@@ -1,0 +1,61 @@
+name: coffee-shop-analysis
+services:
+  rabbitmq:
+    container_name: rabbitmq
+    image: rabbitmq:3.12-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=admin
+      - RABBITMQ_DEFAULT_PASS=admin
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - coffee_net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+
+  connection-node:
+    container_name: connection-node
+    image: connection-node:latest
+    entrypoint: python3 /main.py
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOGGING_LEVEL=DEBUG
+      - SERVER_PORT=12345
+    volumes:
+      - ./config.ini:/config.ini   
+    networks:
+      - coffee_net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "12345:12345"
+
+  client:
+    container_name: client
+    image: client:latest
+    entrypoint: /client
+    environment:
+      - CLI_LOG_LEVEL=DEBUG
+      - SERVER_HOST=connection-node
+      - SERVER_PORT=12345
+    networks:
+      - coffee_net
+    depends_on:
+      - connection-node
+
+volumes:
+  rabbitmq_data:
+
+networks:
+  coffee_net:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.25.125.0/24

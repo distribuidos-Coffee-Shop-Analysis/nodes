@@ -1,20 +1,38 @@
-FROM python:3.9.7-slim
+# Build stage
+FROM golang:1.21-alpine AS builder
 
-COPY requirements.txt /requirements.txt
+# Set working directory
+WORKDIR /app
 
-RUN pip install --no-cache-dir -r /requirements.txt
+# Copy go mod files
+COPY go.mod go.sum ./
 
-# Copy files maintaining directory structure  
-COPY main.py /main.py
-COPY common/ /common/
-COPY server/ /server/
-COPY protocol/ /protocol/
-COPY tests/ /tests/
-COPY config.ini /config.ini
+# Download dependencies
+RUN go mod download
 
-# Set Python path
-ENV PYTHONPATH=/
+# Copy source code maintaining directory structure
+COPY main.go ./
+COPY common/ ./common/
+COPY server/ ./server/
+COPY protocol/ ./protocol/
+COPY middleware/ ./middleware/
 
-RUN python -m unittest tests/test_common.py
+# Build the application
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
 
-ENTRYPOINT ["/bin/sh"]
+# Final stage
+FROM alpine:latest
+
+
+# Create app directory
+WORKDIR /root/
+
+# Copy the binary from builder stage
+COPY --from=builder /app/main .
+
+
+# Expose port (if needed for health checks)
+EXPOSE 12345
+
+# Run the binary
+ENTRYPOINT ["./main"]

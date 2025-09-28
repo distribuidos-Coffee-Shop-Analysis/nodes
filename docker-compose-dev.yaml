@@ -22,13 +22,12 @@ services:
   connection-node:
     container_name: connection-node
     image: connection-node:latest
-    entrypoint: python3 /main.py
+    entrypoint: ./main
     environment:
-      - PYTHONUNBUFFERED=1
       - LOGGING_LEVEL=DEBUG
       - SERVER_PORT=12345
     volumes:
-      - ./config.ini:/config.ini   
+      - ./config.ini:/root/config.ini   
     networks:
       - coffee_net
     depends_on:

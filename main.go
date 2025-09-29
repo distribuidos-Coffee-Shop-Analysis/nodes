@@ -6,15 +6,17 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/server"
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node"
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/handlers"
 )
 
 func main() {
 	// Initialize logging
 	initializeLog()
 
+	handler := handlers.NewTransactionFilterHandler()
 	// Create filter node
-	filterNode := server.NewFilterNode()
+	filterNode := node.NewNode(handler)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)

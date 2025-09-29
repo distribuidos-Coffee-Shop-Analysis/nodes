@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 	"gopkg.in/ini.v1"
 )
 
@@ -23,17 +24,15 @@ type FilterConfig struct {
 	TransactionItemsExchange string
 }
 
-// ServerConfig holds server configuration
-type ServerConfig struct {
-	Port          int
-	IP            string
-	ListenBacklog int
-}
-
 // Config represents the configuration manager for the filter node
 type Config struct {
 	configPath string
 	cfg        *ini.File
+}
+
+type NodeConfig struct {
+	NodeID string
+	Role   NodeRole
 }
 
 // Global configuration instance with thread safety
@@ -86,25 +85,13 @@ func (c *Config) GetRabbitmqConfig() *RabbitmqConfig {
 	}
 }
 
-// GetFilterConfig returns filter node specific configuration
-func (c *Config) GetFilterConfig() *FilterConfig {
+// GetNodeConfig returns the node configuration
+func (c *Config) GetNodeConfig() *NodeConfig {
 	section := c.cfg.Section("DEFAULT")
 
-	return &FilterConfig{
-		InputQueue:               section.Key("INPUT_QUEUE").MustString("transactions_queue"),
-		TransactionsExchange:     section.Key("TRANSACTIONS_EXCHANGE").MustString("transactions_exchange"),
-		TransactionItemsExchange: section.Key("TRANSACTION_ITEMS_EXCHANGE").MustString("transaction_items_exchange"),
-	}
-}
-
-// GetServerConfig returns server configuration
-func (c *Config) GetServerConfig() *ServerConfig {
-	section := c.cfg.Section("DEFAULT")
-
-	return &ServerConfig{
-		Port:          section.Key("SERVER_PORT").MustInt(12345),
-		IP:            section.Key("SERVER_IP").MustString("connection-node"),
-		ListenBacklog: section.Key("SERVER_LISTEN_BACKLOG").MustInt(5),
+	return &NodeConfig{
+		NodeID: section.Key("NODE_ID").MustString("default-01"),
+		Role:   NodeRole(section.Key("NODE_ROLE").MustString("filter_year")),
 	}
 }
 
@@ -137,4 +124,55 @@ func SetConfigPath(path string) {
 	configOnce.Do(func() {
 		configInstance = NewConfig(path)
 	})
+}
+
+type NodeRole string
+
+const (
+	RoleFilterYear NodeRole = "filter_year"
+	RoleFilterHour NodeRole = "filter_hour"
+)
+
+type Binding struct {
+	Exchange   string
+	RoutingKey string
+}
+
+type OutputRoute struct {
+	Exchange   string
+	RoutingKey string
+}
+
+const (
+	// Exchanges
+	InputExchange            = "transactions_and_transaction_items_exchange"
+	TransactionsExchange     = "transactions_exchange"
+	TransactionItemsExchange = "transaction_items_exchange"
+)
+
+type NodeWiring struct {
+	Role         NodeRole
+	NodeID       string
+	QueueName    string                               // se calcula role.nodeID
+	Bindings     []Binding                            // de dónde leo
+	Outputs      map[protocol.DatasetType]OutputRoute // a dónde publico por dataset
+	DeclareExchs []string                             // exchanges a declarar (durable)
+}
+
+func BuildWiringForFilterYear(role NodeRole, nodeID string) *NodeWiring {
+	return &NodeWiring{
+		Role:      role,
+		NodeID:    nodeID,
+		QueueName: string(role) + "." + nodeID, // e.g. "filter_year.01"
+		Bindings: []Binding{
+			{Exchange: InputExchange, RoutingKey: ""},
+		},
+		Outputs: map[protocol.DatasetType]OutputRoute{
+			protocol.DatasetTypeTransactions:     {Exchange: TransactionsExchange, RoutingKey: ""},
+			protocol.DatasetTypeTransactionItems: {Exchange: TransactionItemsExchange, RoutingKey: ""},
+		},
+		DeclareExchs: []string{
+			InputExchange, TransactionsExchange, TransactionItemsExchange,
+		},
+	}
 }

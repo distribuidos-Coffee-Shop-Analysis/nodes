@@ -19,15 +19,15 @@ type Node struct {
 	shutdownChan      chan struct{}
 }
 
-func NewNode(handler handlers.Handler) *Node {
+func NewNode(handler handlers.Handler, queueManager *middleware.QueueManager) *Node {
 	fn := &Node{
-		queueManager:      middleware.NewQueueManager(),
+		queueManager:      queueManager,
 		handler:           handler,
 		shutdownRequested: false,
 		shutdownChan:      make(chan struct{}),
 	}
 
-	log.Println("action: filter_node_init | result: success")
+	log.Printf("action: node_init | result: success |")
 	return fn
 }
 
@@ -79,7 +79,7 @@ func (node *Node) startHandler() error {
 
 	log.Println("action: transaction_filter_handler_started | result: success")
 
-	// Consumir con callback (bloquea hasta StopConsuming o error)
+	// Consume with callback (blocks until StopConsuming or error)
 	err := node.queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage) {
 		if !node.handler.Accept(batchMessage.DatasetType) {
 			return

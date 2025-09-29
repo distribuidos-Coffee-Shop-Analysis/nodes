@@ -1,4 +1,4 @@
-package server
+package handlers
 
 import (
 	"fmt"
@@ -7,35 +7,26 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
+	// "github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
-// TransactionFilterHandler handles consuming transactions from RabbitMQ,
-// filtering by years 2024-2025, and routing to output queues
 type TransactionFilterHandler struct {
-	cleanupCallback   func(*TransactionFilterHandler)
-	shutdownRequested bool
-	queueManager      *middleware.QueueManager
-	minYear           int
-	maxYear           int
-	wg                sync.WaitGroup
-	shutdownChan      chan struct{}
-	isRunning         bool
-	mu                sync.RWMutex
+	minYear   int
+	maxYear   int
+	mu        sync.RWMutex
+	isRunning bool
 }
 
-// NewTransactionFilterHandler creates a new TransactionFilterHandler instance
-func NewTransactionFilterHandler(cleanupCallback func(*TransactionFilterHandler)) *TransactionFilterHandler {
+func NewTransactionFilterHandler() *TransactionFilterHandler {
 	return &TransactionFilterHandler{
-		cleanupCallback:   cleanupCallback,
-		shutdownRequested: false,
-		minYear:           2024,
-		maxYear:           2025,
-		shutdownChan:      make(chan struct{}),
-		isRunning:         false,
+		minYear:   2024,
+		maxYear:   2025,
+		isRunning: false,
 	}
 }
+
+func (h *TransactionFilterHandler) Name() string { return "transaction_year_filter" }
 
 // Start begins the transaction filter handler
 func (tfh *TransactionFilterHandler) Start() error {
@@ -46,79 +37,40 @@ func (tfh *TransactionFilterHandler) Start() error {
 		return nil
 	}
 
-	tfh.wg.Add(1)
-	go tfh.run()
 	tfh.isRunning = true
+	log.Println("action: handler_init | name: transaction_year_filter | result: success")
 
 	return nil
 }
 
-// RequestShutdown requests graceful shutdown of the handler
-func (tfh *TransactionFilterHandler) RequestShutdown() {
-	tfh.mu.Lock()
-	defer tfh.mu.Unlock()
-
-	if tfh.shutdownRequested {
-		return
-	}
-
-	tfh.shutdownRequested = true
-	log.Println("action: transaction_filter_handler_shutdown | result: requested")
-
-	// Stop consuming to unblock the handler
-	if tfh.queueManager != nil {
-		tfh.queueManager.StopConsuming()
-	}
-
-	close(tfh.shutdownChan)
+func (h *TransactionFilterHandler) Accept(datasetType protocol.DatasetType) bool {
+	return datasetType == protocol.DatasetTypeTransactions || datasetType == protocol.DatasetTypeTransactionItems
 }
 
-// Wait waits for the handler to finish
-func (tfh *TransactionFilterHandler) Wait() {
-	tfh.wg.Wait()
-}
-
-// IsAlive checks if the handler is still running
+// Checks if the handler is still running
 func (tfh *TransactionFilterHandler) IsAlive() bool {
 	tfh.mu.RLock()
 	defer tfh.mu.RUnlock()
 	return tfh.isRunning
 }
 
-// run is the main handler loop for consuming and filtering transactions
-func (tfh *TransactionFilterHandler) run() {
-	defer tfh.wg.Done()
-	defer tfh.cleanup()
-
-	log.Println("action: transaction_filter_handler_start | result: success")
-
-	tfh.queueManager = middleware.NewQueueManager()
-
-	if err := tfh.queueManager.Connect(); err != nil {
-		log.Printf("action: transaction_filter_handler | result: fail | error: Could not connect to RabbitMQ: %v", err)
-		return
-	}
-
-	// Start consuming transactions with callback (this blocks until shutdown)
-	err := tfh.queueManager.StartConsuming(tfh.handleTransactionBatch)
-	if err != nil && !tfh.shutdownRequested {
-		log.Printf("action: transaction_filter_handler | result: fail | error: %v", err)
-	}
+func (h *TransactionFilterHandler) Close() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.isRunning = false
+	log.Println("action: handler_close | name: transaction_year_filter | result: success")
+	return nil
 }
 
 // handleTransactionBatch handles a transaction batch - filter by year and route to output queues
-func (tfh *TransactionFilterHandler) handleTransactionBatch(batchMessage *protocol.BatchMessage) {
-	if tfh.shutdownRequested {
-		return
-	}
-
+func (tfh *TransactionFilterHandler) Handle(batchMessage *protocol.BatchMessage) ([]*protocol.BatchMessage, error) {
 	// Validate dataset type - only process TRANSACTIONS and TRANSACTION_ITEMS
 	if batchMessage.DatasetType != protocol.DatasetTypeTransactions &&
 		batchMessage.DatasetType != protocol.DatasetTypeTransactionItems {
 		log.Printf("action: batch_dropped | result: success | "+
 			"dataset_type: %s | reason: invalid_dataset_type | "+
 			"record_count: %d", batchMessage.DatasetType, len(batchMessage.Records))
-		return
+		return nil, nil
 	}
 
 	log.Printf("action: transaction_batch_received | result: success | "+
@@ -127,9 +79,14 @@ func (tfh *TransactionFilterHandler) handleTransactionBatch(batchMessage *protoc
 
 	// Filter records by year (2024-2025)
 	filteredRecords := tfh.filterRecordsByYear(batchMessage.Records)
-	batchMessage.Records = filteredRecords
 
-	tfh.routeToOutputExchanges(batchMessage)
+	if len(filteredRecords) == 0 && !batchMessage.EOF {
+		return nil, nil
+	}
+	out := *batchMessage
+	out.Records = filteredRecords
+
+	return []*protocol.BatchMessage{&out}, nil
 }
 
 // filterRecordsByYear filters records based on created_at field being between 2024-2025
@@ -164,6 +121,8 @@ func (tfh *TransactionFilterHandler) filterRecordsByYear(records []protocol.Reco
 		// Filter by year range
 		if year >= tfh.minYear && year <= tfh.maxYear {
 			filteredRecords = append(filteredRecords, record)
+			log.Printf("action: record_accepted | year: %d | "+
+				"transaction_id: %s", year, tfh.extractTransactionID(record))
 		} else {
 			transactionID := tfh.extractTransactionID(record)
 			log.Printf("action: record_filtered | year: %d | "+
@@ -172,31 +131,6 @@ func (tfh *TransactionFilterHandler) filterRecordsByYear(records []protocol.Reco
 	}
 
 	return filteredRecords
-}
-
-// routeToOutputExchanges routes filtered records to the appropriate output queues based on dataset type
-func (tfh *TransactionFilterHandler) routeToOutputExchanges(batchMessage *protocol.BatchMessage) {
-	if err := tfh.queueManager.SendToDatasetOutputExchanges(batchMessage); err != nil {
-		log.Printf("action: route_to_output_exchanges | result: fail | error: %v", err)
-	}
-}
-
-// cleanup cleans up resources and notifies server
-func (tfh *TransactionFilterHandler) cleanup() {
-	tfh.mu.Lock()
-	defer tfh.mu.Unlock()
-
-	tfh.isRunning = false
-
-	if tfh.queueManager != nil {
-		tfh.queueManager.Close()
-	}
-
-	if tfh.cleanupCallback != nil {
-		tfh.cleanupCallback(tfh)
-	}
-
-	log.Println("action: transaction_filter_handler_cleanup | result: success")
 }
 
 // extractCreatedAt extracts the created_at field from a record

@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 
@@ -12,48 +11,28 @@ import (
 
 // QueueManager manages RabbitMQ connections and queue operations for the filter node
 type QueueManager struct {
-	host                     string
-	port                     int
-	username                 string
-	password                 string
-	connection               *amqp.Connection
-	channel                  *amqp.Channel
-	consuming                bool
-	consumerTag              string
-	inputQueue               string
-	transactionsExchange     string
-	transactionItemsExchange string
-	inputQueueMapping        map[protocol.DatasetType]string
+	host       string
+	port       int
+	username   string
+	password   string
+	connection *amqp.Connection
+	channel    *amqp.Channel
+	consuming  bool
+
+	wiring *common.NodeWiring
 }
 
-// NewQueueManager creates a new QueueManager instance
-func NewQueueManager() *QueueManager {
-	config := common.GetConfig()
-	rabbitmqConfig := config.GetRabbitmqConfig()
-	filterConfig := config.GetFilterConfig()
-
-	qm := &QueueManager{
-		host:                     rabbitmqConfig.Host,
-		port:                     rabbitmqConfig.Port,
-		username:                 rabbitmqConfig.Username,
-		password:                 rabbitmqConfig.Password,
-		consuming:                false,
-		inputQueue:               filterConfig.InputQueue,
-		transactionsExchange:     filterConfig.TransactionsExchange,
-		transactionItemsExchange: filterConfig.TransactionItemsExchange,
+func NewQueueManagerWithWiring(w *common.NodeWiring) *QueueManager {
+	cfg := common.GetConfig()
+	r := cfg.GetRabbitmqConfig()
+	return &QueueManager{
+		host:      r.Host,
+		port:      r.Port,
+		username:  r.Username,
+		password:  r.Password,
+		consuming: false,
+		wiring:    w,
 	}
-
-	// Create input queue mapping
-	qm.inputQueueMapping = map[protocol.DatasetType]string{
-		protocol.DatasetTypeTransactions:     qm.inputQueue,
-		protocol.DatasetTypeTransactionItems: qm.inputQueue,
-	}
-
-	log.Printf("action: queue_manager_init | input_queue: %s | "+
-		"transactions_exchange: %s | transaction_items_exchange: %s",
-		qm.inputQueue, qm.transactionsExchange, qm.transactionItemsExchange)
-
-	return qm
 }
 
 // Connect establishes connection to RabbitMQ
@@ -76,59 +55,32 @@ func (qm *QueueManager) Connect() error {
 		return err
 	}
 
-	// Declare input queue
-	_, err = qm.channel.QueueDeclare(
-		qm.inputQueue, // name
-		true,          // durable
-		false,         // delete when unused
-		false,         // exclusive
-		false,         // no-wait
-		nil,           // arguments
-	)
+	// exchanges
+	for _, ex := range qm.wiring.DeclareExchs {
+		kind := "direct"
+		if err := qm.channel.ExchangeDeclare(ex, kind, true, false, false, false, nil); err != nil {
+			_ = qm.channel.Close()
+			_ = qm.connection.Close()
+			return fmt.Errorf("declare exchange %s: %w", ex, err)
+		}
+	}
+
+	// queue by role+id
+	q, err := qm.channel.QueueDeclare(qm.wiring.QueueName, true, false, false, false, nil)
 	if err != nil {
-		log.Printf("action: queue_declare | result: fail | queue: %s | error: %v",
-			qm.inputQueue, err)
+		_ = qm.channel.Close()
+		_ = qm.connection.Close()
 		return err
 	}
 
-	// Declare output exchanges
-	if qm.transactionsExchange != "" {
-		err = qm.channel.ExchangeDeclare(
-			qm.transactionsExchange, // name
-			"direct",                // type
-			true,                    // durable
-			false,                   // auto-deleted
-			false,                   // internal
-			false,                   // no-wait
-			nil,                     // arguments
-		)
-		if err != nil {
-			log.Printf("action: exchange_declare | result: fail | exchange: %s | error: %v",
-				qm.transactionsExchange, err)
+	// binds
+	for _, b := range qm.wiring.Bindings {
+		if err := qm.channel.QueueBind(q.Name, b.RoutingKey, b.Exchange, false, nil); err != nil {
+			_ = qm.channel.Close()
+			_ = qm.connection.Close()
 			return err
 		}
 	}
-
-	if qm.transactionItemsExchange != "" {
-		err = qm.channel.ExchangeDeclare(
-			qm.transactionItemsExchange, // name
-			"direct",                    // type
-			true,                        // durable
-			false,                       // auto-deleted
-			false,                       // internal
-			false,                       // no-wait
-			nil,                         // arguments
-		)
-		if err != nil {
-			log.Printf("action: exchange_declare | result: fail | exchange: %s | error: %v",
-				qm.transactionItemsExchange, err)
-			return err
-		}
-	}
-
-	log.Printf("action: rabbitmq_connect | result: success | host: %s | "+
-		"input_queue: %s | transactions_exchange: %s | transaction_items_exchange: %s",
-		qm.host, qm.inputQueue, qm.transactionsExchange, qm.transactionItemsExchange)
 
 	return nil
 }
@@ -143,22 +95,14 @@ func (qm *QueueManager) Disconnect() {
 
 // StartConsuming starts consuming from configured input queue and calls callback for each message
 func (qm *QueueManager) StartConsuming(callback func(*protocol.BatchMessage)) error {
-	msgs, err := qm.channel.Consume(
-		qm.inputQueue, // queue
-		"",            // consumer
-		false,         // auto-ack (we'll ack manually)
-		false,         // exclusive
-		false,         // no-local
-		false,         // no-wait
-		nil,           // args
-	)
+	msgs, err := qm.channel.Consume(qm.wiring.QueueName, "", false, false, false, false, nil)
 	if err != nil {
 		log.Printf("action: start_consuming | result: fail | error: %v", err)
 		return err
 	}
 
 	qm.consuming = true
-	log.Printf("action: start_consuming | result: success | queue: %s", qm.inputQueue)
+	log.Printf("action: start_consuming | result: success | queue: %s", qm.wiring.QueueName)
 
 	// Process messages
 	for msg := range msgs {
@@ -212,57 +156,19 @@ func (qm *QueueManager) StopConsuming() {
 	log.Println("action: stop_consuming | result: success")
 }
 
-// SendToDatasetOutputExchanges sends filtered batch to all appropriate output exchanges for a dataset type
-func (qm *QueueManager) SendToDatasetOutputExchanges(batchMessage *protocol.BatchMessage) error {
-	var exchange string
-
-	switch batchMessage.DatasetType {
-	case protocol.DatasetTypeTransactions:
-		exchange = qm.transactionsExchange
-	case protocol.DatasetTypeTransactionItems:
-		exchange = qm.transactionItemsExchange
-	default:
-		log.Printf("action: send_to_dataset_output_exchanges | result: fail | "+
-			"error: DATASET TYPE: %s NOT SUPPORTED", batchMessage.DatasetType)
-		return fmt.Errorf("dataset type %s not supported", batchMessage.DatasetType)
+func (qm *QueueManager) SendToDatasetOutputExchanges(b *protocol.BatchMessage) error {
+	route, ok := qm.wiring.Outputs[b.DatasetType]
+	if !ok {
+		return fmt.Errorf("no output route for dataset %v in role %s", b.DatasetType, qm.wiring.Role)
 	}
-
-	success := qm.sendFilteredBatch(exchange, batchMessage)
-	if success {
-		log.Printf("action: send_to_dataset_output_exchanges | result: success | "+
-			"dataset_type: %s", batchMessage.DatasetType)
-		return nil
-	} else {
-		log.Printf("action: send_to_dataset_output_exchanges | result: partial_fail | "+
-			"dataset_type: %s", batchMessage.DatasetType)
-		return fmt.Errorf("failed to send to exchange %s", exchange)
-	}
+	return qm.publish(route.Exchange, route.RoutingKey, qm.encodeToByteArray(b))
 }
 
-// sendFilteredBatch sends filtered batch to specific output exchange by name
-func (qm *QueueManager) sendFilteredBatch(exchangeName string, batchMessage *protocol.BatchMessage) bool {
-	byteArray := qm.encodeToByteArray(batchMessage)
-
-	err := qm.channel.Publish(
-		exchangeName, // exchange
-		"",           // routing key (no specific routing key needed for direct exchange)
-		false,        // mandatory
-		false,        // immediate
-		amqp.Publishing{
-			DeliveryMode: amqp.Persistent, // Make message persistent
-			Body:         byteArray,
-		})
-
-	if err != nil {
-		log.Printf("action: send_filtered_batch | result: fail | error: %v", err)
-		return false
-	}
-
-	log.Printf("action: send_filtered_batch | result: success | exchange: %s | "+
-		"original_type: %s | record_count: %d | eof: %t",
-		exchangeName, batchMessage.DatasetType, len(batchMessage.Records), batchMessage.EOF)
-
-	return true
+func (qm *QueueManager) publish(exchange, rk string, body []byte) error {
+	return qm.channel.Publish(exchange, rk, false, false, amqp.Publishing{
+		DeliveryMode: amqp.Persistent,
+		Body:         body,
+	})
 }
 
 // encodeToByteArray encodes batch message to byte array
@@ -289,13 +195,25 @@ func (qm *QueueManager) encodeToByteArray(batchMessage *protocol.BatchMessage) [
 
 // MessageMiddleware interface methods
 
-// Send sends message to default transactions exchange (MessageMiddleware interface)
+// Send sends message to default output exchange
 func (qm *QueueManager) Send(message []byte) error {
+	// Use the first available output exchange as default
+	var exchange, routingKey string
+	for _, route := range qm.wiring.Outputs {
+		exchange = route.Exchange
+		routingKey = route.RoutingKey
+		break
+	}
+
+	if exchange == "" {
+		return fmt.Errorf("no output exchange configured")
+	}
+
 	err := qm.channel.Publish(
-		qm.transactionsExchange, // exchange
-		"",                      // routing key
-		false,                   // mandatory
-		false,                   // immediate
+		exchange,   // exchange
+		routingKey, // routing key
+		false,      // mandatory
+		false,      // immediate
 		amqp.Publishing{
 			DeliveryMode: amqp.Persistent, // Make message persistent
 			Body:         message,
@@ -310,6 +228,7 @@ func (qm *QueueManager) Send(message []byte) error {
 
 // Close closes the connection
 func (qm *QueueManager) Close() error {
+	qm.consuming = false
 	var err error
 	if qm.connection != nil && !qm.connection.IsClosed() {
 		err = qm.connection.Close()
@@ -322,72 +241,144 @@ func (qm *QueueManager) Close() error {
 	return err
 }
 
-// Delete deletes an exchange
-func (qm *QueueManager) Delete(exchangeName string) error {
+// DeleteExchanges deletes all declared exchanges
+func (qm *QueueManager) DeleteExchanges() error {
 	if qm.channel == nil {
 		return fmt.Errorf("no channel available")
 	}
 
-	// Use provided exchange or default to transactions_exchange
-	targetExchange := exchangeName
-	if targetExchange == "" {
-		targetExchange = qm.transactionsExchange
+	// Delete all declared exchanges
+	for _, exchangeName := range qm.wiring.DeclareExchs {
+		err := qm.channel.ExchangeDelete(exchangeName, false, false)
+		if err != nil {
+			log.Printf("action: delete | result: fail | exchange: %s | error: %v", exchangeName, err)
+			return err
+		}
+		log.Printf("action: delete | result: success | exchange: %s", exchangeName)
 	}
 
-	err := qm.channel.ExchangeDelete(targetExchange, false, false)
-	if err != nil {
-		log.Printf("action: delete | result: fail | exchange: %s | error: %v",
-			targetExchange, err)
-		return err
-	}
-
-	log.Printf("action: delete | result: success | exchange: %s", targetExchange)
 	return nil
 }
 
-// SendDatasetBatch routes dataset batch to appropriate input queue based on dataset type (for compatibility)
-func (qm *QueueManager) SendDatasetBatch(batchMessage *protocol.BatchMessage) error {
-	queueName, exists := qm.inputQueueMapping[batchMessage.DatasetType]
-	if !exists {
-		return fmt.Errorf("no input queue mapping for dataset type: %s", batchMessage.DatasetType)
+// RabbitMQMiddleware implements the MessageMiddleware interface using QueueManager
+type RabbitMQMiddleware struct{}
+
+// NewRabbitMQMiddleware creates a new instance of RabbitMQMiddleware
+func NewRabbitMQMiddleware() *RabbitMQMiddleware {
+	return &RabbitMQMiddleware{}
+}
+
+// StartConsuming implements MessageMiddleware interface
+func (rmq *RabbitMQMiddleware) StartConsuming(m *QueueManager, onMessageCallback onMessageCallback) MessageMiddlewareError {
+	if m.connection == nil || m.connection.IsClosed() {
+		log.Printf("action: start_consuming | result: fail | error: no connection available")
+		return MessageMiddlewareDisconnectedError
 	}
 
-	// Serialize the batch message for the queue
-	messageData := map[string]interface{}{
-		"dataset_type": batchMessage.DatasetType,
-		"records":      make([]string, len(batchMessage.Records)),
-		"eof":          batchMessage.EOF,
-	}
-
-	// Serialize records
-	for i, record := range batchMessage.Records {
-		messageData["records"].([]string)[i] = record.Serialize()
-	}
-
-	messageBody, err := json.Marshal(messageData)
+	msgs, err := m.channel.Consume(m.wiring.QueueName, "", false, false, false, false, nil)
 	if err != nil {
-		log.Printf("action: send_batch | result: fail | error: %v", err)
-		return err
+		log.Printf("action: start_consuming | result: fail | error: %v", err)
+		return MessageMiddlewareMessageError
 	}
 
-	err = qm.channel.Publish(
-		"",        // exchange (default)
-		queueName, // routing key
-		false,     // mandatory
-		false,     // immediate
+	m.consuming = true
+	log.Printf("action: start_consuming | result: success | queue: %s", m.wiring.QueueName)
+
+	// Create a channel for the messages and start the callback in a goroutine
+	consumeChannel := ConsumeChannel(&msgs)
+	done := make(chan error, 1)
+
+	go onMessageCallback(consumeChannel, done)
+
+	// Wait for completion or error
+	err = <-done
+	if err != nil {
+		log.Printf("action: start_consuming | result: fail | error: %v", err)
+		return MessageMiddlewareMessageError
+	}
+
+	return 0 // No error
+}
+
+// StopConsuming implements MessageMiddleware interface
+func (rmq *RabbitMQMiddleware) StopConsuming(m *QueueManager) MessageMiddlewareError {
+	m.consuming = false
+	log.Println("action: stop_consuming | result: success")
+	return 0 // No error
+}
+
+// Send implements MessageMiddleware interface
+func (rmq *RabbitMQMiddleware) Send(m *QueueManager, message []byte) MessageMiddlewareError {
+	if m.connection == nil || m.connection.IsClosed() {
+		log.Printf("action: send | result: fail | error: no connection available")
+		return MessageMiddlewareDisconnectedError
+	}
+
+	// Use the first available output exchange as default
+	var exchange, routingKey string
+	for _, route := range m.wiring.Outputs {
+		exchange = route.Exchange
+		routingKey = route.RoutingKey
+		break
+	}
+
+	if exchange == "" {
+		log.Printf("action: send | result: fail | error: no output exchange configured")
+		return MessageMiddlewareMessageError
+	}
+
+	err := m.channel.Publish(
+		exchange,   // exchange
+		routingKey, // routing key
+		false,      // mandatory
+		false,      // immediate
 		amqp.Publishing{
 			DeliveryMode: amqp.Persistent, // Make message persistent
-			Body:         messageBody,
+			Body:         message,
 		})
 
 	if err != nil {
-		log.Printf("action: send_batch | result: fail | error: %v", err)
-		return err
+		log.Printf("action: send | result: fail | error: %v", err)
+		return MessageMiddlewareMessageError
+	}
+	return 0 // No error
+}
+
+// Close implements MessageMiddleware interface
+func (rmq *RabbitMQMiddleware) Close(m *QueueManager) MessageMiddlewareError {
+	m.consuming = false
+	var err error
+	if m.connection != nil && !m.connection.IsClosed() {
+		err = m.connection.Close()
+	}
+	if err != nil {
+		log.Printf("action: close | result: fail | error: %v", err)
+		return MessageMiddlewareCloseError
+	} else {
+		log.Println("action: close | result: success")
+	}
+	return 0 // No error
+}
+
+// Delete implements MessageMiddleware interface
+func (rmq *RabbitMQMiddleware) Delete(m *QueueManager) MessageMiddlewareError {
+	if m.channel == nil {
+		log.Printf("action: delete | result: fail | error: no channel available")
+		return MessageMiddlewareDeleteError
 	}
 
-	log.Printf("action: send_batch | result: success | queue: %s | "+
-		"dataset_type: %s | record_count: %d | eof: %t",
-		queueName, batchMessage.DatasetType, len(batchMessage.Records), batchMessage.EOF)
+	// Delete all declared exchanges
+	for _, exchangeName := range m.wiring.DeclareExchs {
+		err := m.channel.ExchangeDelete(exchangeName, false, false)
+		if err != nil {
+			log.Printf("action: delete | result: fail | exchange: %s | error: %v", exchangeName, err)
+			return MessageMiddlewareDeleteError
+		}
+		log.Printf("action: delete | result: success | exchange: %s", exchangeName)
+	}
 
-	return nil
+	return 0 // No error
 }
+
+// Ensure RabbitMQMiddleware implements MessageMiddleware interface
+var _ MessageMiddleware[QueueManager] = (*RabbitMQMiddleware)(nil)

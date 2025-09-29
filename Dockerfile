@@ -13,9 +13,9 @@ RUN go mod download
 # Copy source code maintaining directory structure
 COPY main.go ./
 COPY common/ ./common/
-COPY server/ ./server/
 COPY protocol/ ./protocol/
 COPY middleware/ ./middleware/
+COPY node/ ./node/
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
@@ -29,6 +29,8 @@ WORKDIR /root/
 
 # Copy the binary from builder stage
 COPY --from=builder /app/main .
+# Copy configuration file
+COPY config.ini .
 
 
 # Expose port (if needed for health checks)

@@ -87,10 +87,11 @@ func (node *Node) startHandler() error {
 
 		outs, err := node.handler.Handle(batchMessage)
 		if err != nil {
-			log.Printf("action: handler_handle | result: fail | | error: %v", err)
+			log.Printf("action: handler_handle | result: fail | error: %v", err)
 			return
 		}
 		if len(outs) == 0 {
+			log.Printf("action: every record filtered out | result: success ")
 			return
 		}
 		for _, out := range outs {

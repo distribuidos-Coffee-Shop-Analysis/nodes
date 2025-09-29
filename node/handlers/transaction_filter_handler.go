@@ -121,6 +121,8 @@ func (tfh *TransactionFilterHandler) filterRecordsByYear(records []protocol.Reco
 		// Filter by year range
 		if year >= tfh.minYear && year <= tfh.maxYear {
 			filteredRecords = append(filteredRecords, record)
+			log.Printf("action: record_accepted | year: %d | "+
+				"transaction_id: %s", year, tfh.extractTransactionID(record))
 		} else {
 			transactionID := tfh.extractTransactionID(record)
 			log.Printf("action: record_filtered | year: %d | "+

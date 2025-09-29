@@ -58,3 +58,5 @@ func initializeLog() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("")
 }
+
+

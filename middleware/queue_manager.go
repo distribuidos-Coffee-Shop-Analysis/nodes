@@ -15,11 +15,11 @@ type QueueManager struct {
 	port       int
 	username   string
 	password   string
-	connection *amqp.Connection
+	Connection *amqp.Connection
 	channel    *amqp.Channel
 	consuming  bool
 
-	wiring *common.NodeWiring
+	Wiring *common.NodeWiring
 }
 
 func NewQueueManagerWithWiring(w *common.NodeWiring) *QueueManager {
@@ -31,7 +31,7 @@ func NewQueueManagerWithWiring(w *common.NodeWiring) *QueueManager {
 		username:  r.Username,
 		password:  r.Password,
 		consuming: false,
-		wiring:    w,
+		Wiring:    w,
 	}
 }
 
@@ -43,41 +43,41 @@ func (qm *QueueManager) Connect() error {
 	connStr := fmt.Sprintf("amqp://%s:%s@%s:%d/",
 		qm.username, qm.password, qm.host, qm.port)
 
-	qm.connection, err = amqp.Dial(connStr)
+	qm.Connection, err = amqp.Dial(connStr)
 	if err != nil {
 		log.Printf("action: rabbitmq_connect | result: fail | error: %v", err)
 		return err
 	}
 
-	qm.channel, err = qm.connection.Channel()
+	qm.channel, err = qm.Connection.Channel()
 	if err != nil {
 		log.Printf("action: rabbitmq_channel | result: fail | error: %v", err)
 		return err
 	}
 
 	// exchanges
-	for _, ex := range qm.wiring.DeclareExchs {
+	for _, ex := range qm.Wiring.DeclareExchs {
 		kind := "direct"
 		if err := qm.channel.ExchangeDeclare(ex, kind, true, false, false, false, nil); err != nil {
 			_ = qm.channel.Close()
-			_ = qm.connection.Close()
+			_ = qm.Connection.Close()
 			return fmt.Errorf("declare exchange %s: %w", ex, err)
 		}
 	}
 
 	// queue by role+id
-	q, err := qm.channel.QueueDeclare(qm.wiring.QueueName, true, false, false, false, nil)
+	q, err := qm.channel.QueueDeclare(qm.Wiring.QueueName, true, false, false, false, nil)
 	if err != nil {
 		_ = qm.channel.Close()
-		_ = qm.connection.Close()
+		_ = qm.Connection.Close()
 		return err
 	}
 
 	// binds
-	for _, b := range qm.wiring.Bindings {
+	for _, b := range qm.Wiring.Bindings {
 		if err := qm.channel.QueueBind(q.Name, b.RoutingKey, b.Exchange, false, nil); err != nil {
 			_ = qm.channel.Close()
-			_ = qm.connection.Close()
+			_ = qm.Connection.Close()
 			return err
 		}
 	}
@@ -87,22 +87,22 @@ func (qm *QueueManager) Connect() error {
 
 // Disconnect closes RabbitMQ connection
 func (qm *QueueManager) Disconnect() {
-	if qm.connection != nil && !qm.connection.IsClosed() {
-		qm.connection.Close()
+	if qm.Connection != nil && !qm.Connection.IsClosed() {
+		qm.Connection.Close()
 	}
 	log.Println("action: rabbitmq_disconnect | result: success")
 }
 
 // StartConsuming starts consuming from configured input queue and calls callback for each message
 func (qm *QueueManager) StartConsuming(callback func(*protocol.BatchMessage)) error {
-	msgs, err := qm.channel.Consume(qm.wiring.QueueName, "", false, false, false, false, nil)
+	msgs, err := qm.channel.Consume(qm.Wiring.QueueName, "", false, false, false, false, nil)
 	if err != nil {
 		log.Printf("action: start_consuming | result: fail | error: %v", err)
 		return err
 	}
 
 	qm.consuming = true
-	log.Printf("action: start_consuming | result: success | queue: %s", qm.wiring.QueueName)
+	log.Printf("action: start_consuming | result: success | queue: %s", qm.Wiring.QueueName)
 
 	// Process messages
 	for msg := range msgs {
@@ -156,42 +156,20 @@ func (qm *QueueManager) StopConsuming() {
 	log.Println("action: stop_consuming | result: success")
 }
 
-func (qm *QueueManager) SendToDatasetOutputExchanges(b *protocol.BatchMessage) error {
-	route, ok := qm.wiring.Outputs[b.DatasetType]
-	if !ok {
-		return fmt.Errorf("no output route for dataset %v in role %s", b.DatasetType, qm.wiring.Role)
-	}
-	return qm.publish(route.Exchange, route.RoutingKey, qm.encodeToByteArray(b))
-}
+// func (qm *QueueManager) SendToDatasetOutputExchanges(b *protocol.BatchMessage) error {
+// 	route, ok := qm.wiring.Outputs[b.DatasetType]
+// 	if !ok {
+// 		return fmt.Errorf("no output route for dataset %v in role %s", b.DatasetType, qm.wiring.Role)
+// 	}
+// 	return qm.publish(route.Exchange, route.RoutingKey, qm.encodeToByteArray(b))
+// }
 
-func (qm *QueueManager) publish(exchange, rk string, body []byte) error {
-	return qm.channel.Publish(exchange, rk, false, false, amqp.Publishing{
-		DeliveryMode: amqp.Persistent,
-		Body:         body,
-	})
-}
-
-// encodeToByteArray encodes batch message to byte array
-func (qm *QueueManager) encodeToByteArray(batchMessage *protocol.BatchMessage) []byte {
-	// [MessageType][DatasetType][EOF][RecordCount][Records...]
-	data := make([]byte, 0)
-	data = append(data, protocol.MessageTypeBatch)
-	data = append(data, byte(batchMessage.DatasetType))
-
-	// Build content: EOF|RecordCount|Record1|Record2|...
-	eofValue := "0"
-	if batchMessage.EOF {
-		eofValue = "1"
-	}
-
-	content := fmt.Sprintf("%s|%d", eofValue, len(batchMessage.Records))
-	for _, record := range batchMessage.Records {
-		content += "|" + record.Serialize()
-	}
-
-	data = append(data, []byte(content)...)
-	return data
-}
+// func (qm *QueueManager) publish(exchange, rk string, body []byte) error {
+// 	return qm.channel.Publish(exchange, rk, false, false, amqp.Publishing{
+// 		DeliveryMode: amqp.Persistent,
+// 		Body:         body,
+// 	})
+// }
 
 // MessageMiddleware interface methods
 
@@ -199,7 +177,7 @@ func (qm *QueueManager) encodeToByteArray(batchMessage *protocol.BatchMessage) [
 func (qm *QueueManager) Send(message []byte) error {
 	// Use the first available output exchange as default
 	var exchange, routingKey string
-	for _, route := range qm.wiring.Outputs {
+	for _, route := range qm.Wiring.Outputs {
 		exchange = route.Exchange
 		routingKey = route.RoutingKey
 		break
@@ -230,8 +208,8 @@ func (qm *QueueManager) Send(message []byte) error {
 func (qm *QueueManager) Close() error {
 	qm.consuming = false
 	var err error
-	if qm.connection != nil && !qm.connection.IsClosed() {
-		err = qm.connection.Close()
+	if qm.Connection != nil && !qm.Connection.IsClosed() {
+		err = qm.Connection.Close()
 	}
 	if err != nil {
 		log.Printf("action: close | result: fail | error: %v", err)
@@ -248,7 +226,7 @@ func (qm *QueueManager) DeleteExchanges() error {
 	}
 
 	// Delete all declared exchanges
-	for _, exchangeName := range qm.wiring.DeclareExchs {
+	for _, exchangeName := range qm.Wiring.DeclareExchs {
 		err := qm.channel.ExchangeDelete(exchangeName, false, false)
 		if err != nil {
 			log.Printf("action: delete | result: fail | exchange: %s | error: %v", exchangeName, err)
@@ -270,19 +248,19 @@ func NewRabbitMQMiddleware() *RabbitMQMiddleware {
 
 // StartConsuming implements MessageMiddleware interface
 func (rmq *RabbitMQMiddleware) StartConsuming(m *QueueManager, onMessageCallback onMessageCallback) MessageMiddlewareError {
-	if m.connection == nil || m.connection.IsClosed() {
+	if m.Connection == nil || m.Connection.IsClosed() {
 		log.Printf("action: start_consuming | result: fail | error: no connection available")
 		return MessageMiddlewareDisconnectedError
 	}
 
-	msgs, err := m.channel.Consume(m.wiring.QueueName, "", false, false, false, false, nil)
+	msgs, err := m.channel.Consume(m.Wiring.QueueName, "", false, false, false, false, nil)
 	if err != nil {
 		log.Printf("action: start_consuming | result: fail | error: %v", err)
 		return MessageMiddlewareMessageError
 	}
 
 	m.consuming = true
-	log.Printf("action: start_consuming | result: success | queue: %s", m.wiring.QueueName)
+	log.Printf("action: start_consuming | result: success | queue: %s", m.Wiring.QueueName)
 
 	// Create a channel for the messages and start the callback in a goroutine
 	consumeChannel := ConsumeChannel(&msgs)
@@ -309,14 +287,14 @@ func (rmq *RabbitMQMiddleware) StopConsuming(m *QueueManager) MessageMiddlewareE
 
 // Send implements MessageMiddleware interface
 func (rmq *RabbitMQMiddleware) Send(m *QueueManager, message []byte) MessageMiddlewareError {
-	if m.connection == nil || m.connection.IsClosed() {
+	if m.Connection == nil || m.Connection.IsClosed() {
 		log.Printf("action: send | result: fail | error: no connection available")
 		return MessageMiddlewareDisconnectedError
 	}
 
 	// Use the first available output exchange as default
 	var exchange, routingKey string
-	for _, route := range m.wiring.Outputs {
+	for _, route := range m.Wiring.Outputs {
 		exchange = route.Exchange
 		routingKey = route.RoutingKey
 		break
@@ -348,8 +326,8 @@ func (rmq *RabbitMQMiddleware) Send(m *QueueManager, message []byte) MessageMidd
 func (rmq *RabbitMQMiddleware) Close(m *QueueManager) MessageMiddlewareError {
 	m.consuming = false
 	var err error
-	if m.connection != nil && !m.connection.IsClosed() {
-		err = m.connection.Close()
+	if m.Connection != nil && !m.Connection.IsClosed() {
+		err = m.Connection.Close()
 	}
 	if err != nil {
 		log.Printf("action: close | result: fail | error: %v", err)
@@ -368,7 +346,7 @@ func (rmq *RabbitMQMiddleware) Delete(m *QueueManager) MessageMiddlewareError {
 	}
 
 	// Delete all declared exchanges
-	for _, exchangeName := range m.wiring.DeclareExchs {
+	for _, exchangeName := range m.Wiring.DeclareExchs {
 		err := m.channel.ExchangeDelete(exchangeName, false, false)
 		if err != nil {
 			log.Printf("action: delete | result: fail | exchange: %s | error: %v", exchangeName, err)

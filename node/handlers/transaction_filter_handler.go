@@ -7,8 +7,10 @@ import (
 	"strings"
 	"sync"
 
-	// "github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
+	"github.com/rabbitmq/amqp091-go"
 )
 
 type TransactionFilterHandler struct {
@@ -23,54 +25,27 @@ func NewTransactionFilterHandler() *TransactionFilterHandler {
 		minYear:   2024,
 		maxYear:   2025,
 		isRunning: false,
+		
 	}
 }
 
 func (h *TransactionFilterHandler) Name() string { return "transaction_year_filter" }
 
-// Start begins the transaction filter handler
-func (tfh *TransactionFilterHandler) Start() error {
-	tfh.mu.Lock()
-	defer tfh.mu.Unlock()
-
-	if tfh.isRunning {
-		return nil
-	}
-
-	tfh.isRunning = true
-	log.Println("action: handler_init | name: transaction_year_filter | result: success")
-
-	return nil
-}
-
-func (h *TransactionFilterHandler) Accept(datasetType protocol.DatasetType) bool {
-	return datasetType == protocol.DatasetTypeTransactions || datasetType == protocol.DatasetTypeTransactionItems
-}
-
-// Checks if the handler is still running
-func (tfh *TransactionFilterHandler) IsAlive() bool {
-	tfh.mu.RLock()
-	defer tfh.mu.RUnlock()
-	return tfh.isRunning
-}
-
-func (h *TransactionFilterHandler) Close() error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.isRunning = false
-	log.Println("action: handler_close | name: transaction_year_filter | result: success")
-	return nil
-}
 
 // handleTransactionBatch handles a transaction batch - filter by year and route to output queues
-func (tfh *TransactionFilterHandler) Handle(batchMessage *protocol.BatchMessage) ([]*protocol.BatchMessage, error) {
+func (tfh *TransactionFilterHandler) Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection, 
+	wiring *common.NodeWiring, clientWG *sync.WaitGroup) (error) {
+
+	clientWG.Add(1)
+	defer clientWG.Done()
+	
 	// Validate dataset type - only process TRANSACTIONS and TRANSACTION_ITEMS
 	if batchMessage.DatasetType != protocol.DatasetTypeTransactions &&
 		batchMessage.DatasetType != protocol.DatasetTypeTransactionItems {
 		log.Printf("action: batch_dropped | result: success | "+
 			"dataset_type: %s | reason: invalid_dataset_type | "+
 			"record_count: %d", batchMessage.DatasetType, len(batchMessage.Records))
-		return nil, nil
+		return nil
 	}
 
 	log.Printf("action: transaction_batch_received | result: success | "+
@@ -81,12 +56,23 @@ func (tfh *TransactionFilterHandler) Handle(batchMessage *protocol.BatchMessage)
 	filteredRecords := tfh.filterRecordsByYear(batchMessage.Records)
 
 	if len(filteredRecords) == 0 && !batchMessage.EOF {
-		return nil, nil
+		return nil
 	}
 	out := *batchMessage
 	out.Records = filteredRecords
 
-	return []*protocol.BatchMessage{&out}, nil
+	publisher, err := middleware.NewPublisher(connection, wiring)
+	if err != nil {
+		log.Printf("action: create publisher | result: fail | error: %v", err)
+		return err
+	}
+
+	if err := publisher.SendToDatasetOutputExchanges(&out); err != nil {
+		log.Printf("action: node_publish | result: fail | error: %v", err)
+		return err
+	}
+
+	return nil
 }
 
 // filterRecordsByYear filters records based on created_at field being between 2024-2025

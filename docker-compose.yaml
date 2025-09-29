@@ -15,4 +15,4 @@ services:
 networks:
   coffee_net:
     external: true
-    name: conection-node_coffee_net
+    name: connection-node_coffee_net

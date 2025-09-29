@@ -12,6 +12,18 @@ services:
     networks:
       - coffee_net
 
+  filter-node-year-02:
+    build: .
+    environment:
+      - NODE_ROLE=filter_year
+      - NODE_ID=02
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=admin
+      - RABBITMQ_PASSWORD=admin
+    networks:
+      - coffee_net
+
 networks:
   coffee_net:
     external: true

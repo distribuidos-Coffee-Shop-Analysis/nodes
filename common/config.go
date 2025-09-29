@@ -129,8 +129,19 @@ func SetConfigPath(path string) {
 type NodeRole string
 
 const (
-	RoleFilterYear NodeRole = "filter_year"
-	RoleFilterHour NodeRole = "filter_hour"
+	RoleFilterYear   NodeRole = "filter_year"
+	RoleFilterHour   NodeRole = "filter_hour"
+	RoleFilterAmount NodeRole = "filter_amount"
+	RoleGroupByQ2    NodeRole = "q2_group"
+	RoleGroupByQ3    NodeRole = "q3_group"
+	RoleGroupByQ4    NodeRole = "q4_group"
+	RoleAggregateQ2  NodeRole = "q2_aggregate"
+	RoleAggregateQ3  NodeRole = "q3_aggregate"
+	RoleAggregateQ4  NodeRole = "q4_aggregate"
+	RoleJoinerQ2     NodeRole = "q2_join"
+	RoleJoinerQ3     NodeRole = "q3_join"
+	RoleJoinerQ4U    NodeRole = "q4_join_users"
+	RoleJoinerQ4S    NodeRole = "q4_join_stores"
 )
 
 type Binding struct {
@@ -145,9 +156,38 @@ type OutputRoute struct {
 
 const (
 	// Exchanges
-	InputExchange            = "transactions_and_transaction_items_exchange"
+	
+	// Filer by year
+	InputExchangeYear         = "transactions_and_transaction_items_exchange"
 	TransactionsExchange     = "transactions_exchange"
 	TransactionItemsExchange = "transaction_items_exchange"
+
+	// Filter by hour
+	InputExchangeHour = TransactionsExchange
+	TransactionsFilteredHourExchange  = "transactions_filtered_hour_exchange"
+
+	// Filter by amount
+	InputExchangeAmount = TransactionsFilteredHourExchange 
+	RepliesExchange = "replies_exchange" // finish Q1
+
+	// Q2
+	InputQ2Exchange = TransactionItemsExchange
+	Q2GroupedExchange = "q2_grouped_exchange"
+	Q2AggregatedExchange = "q2_aggregated_exchange"
+	Q2JoinExchange = "q2_joined_exchange"
+
+	// Q3
+	InputQ3Exchange = TransactionsFilteredHourExchange
+	Q3GroupedExchange = "q3_grouped_exchange"
+	Q3AggregatedExchange = "q3_aggregated_exchange"
+	Q3JoinExchange = "q3_joined_exchange"
+
+	// Q4
+	InputQ4Exchange = TransactionsExchange
+	Q4GroupedExchange = "q4_grouped_exchange"
+	Q4AggregatedExchange = "q4_aggregated_exchange"
+	Q4JoinUsersExchange = "q4_joined_users_exchange"
+	Q4JoinStoresExchange = "q4_joined_stores_exchange"
 )
 
 type NodeWiring struct {
@@ -165,14 +205,83 @@ func BuildWiringForFilterYear(role NodeRole, nodeID string) *NodeWiring {
 		NodeID:    nodeID,
 		QueueName: string(role) + "." + nodeID, // e.g. "filter_year.01"
 		Bindings: []Binding{
-			{Exchange: InputExchange, RoutingKey: ""},
+			{Exchange: InputExchangeYear, RoutingKey: ""},
 		},
 		Outputs: map[protocol.DatasetType]OutputRoute{
 			protocol.DatasetTypeTransactions:     {Exchange: TransactionsExchange, RoutingKey: ""},
 			protocol.DatasetTypeTransactionItems: {Exchange: TransactionItemsExchange, RoutingKey: ""},
 		},
 		DeclareExchs: []string{
-			InputExchange, TransactionsExchange, TransactionItemsExchange,
+			InputExchangeYear, TransactionsExchange, TransactionItemsExchange,
+		},
+	}
+}
+
+func BuildWiringForFilterHour(role NodeRole, nodeID string) *NodeWiring {
+	return &NodeWiring{
+		Role:      role,
+		NodeID:    nodeID,
+		QueueName: string(role) + "." + nodeID, // e.g. "filter_hour.01"
+		Bindings: []Binding{
+			{Exchange: InputExchangeHour, RoutingKey: ""},
+		},
+		Outputs: map[protocol.DatasetType]OutputRoute{
+			protocol.DatasetTypeTransactions:     {Exchange: TransactionsFilteredHourExchange, RoutingKey: ""},
+		},
+		DeclareExchs: []string{
+			InputExchangeHour, TransactionsFilteredHourExchange,
+		},
+	}
+}
+
+func BuildWiringForFilterAmount(nodeID string) *NodeWiring {
+	return &NodeWiring{
+		Role:      RoleFilterAmount,
+		NodeID:    nodeID,
+		QueueName: string(RoleFilterAmount) + "." + nodeID, // e.g. "filter_amount.01"
+		Bindings: []Binding{
+			{Exchange: InputExchangeAmount, RoutingKey: ""},
+		},
+		Outputs: map[protocol.DatasetType]OutputRoute{
+			protocol.DatasetTypeTransactions:     {Exchange: RepliesExchange, RoutingKey: ""},
+		},
+		DeclareExchs: []string{
+			InputExchangeAmount, RepliesExchange,
+		},
+	}
+}
+
+// Q2
+func BuildWiringForGroupByQ2(role NodeRole, nodeID string) *NodeWiring {
+	return &NodeWiring{
+		Role:      role,
+		NodeID:    nodeID,
+		QueueName: string(role) + "." + nodeID, // e.g. "filter_year.01"
+		Bindings: []Binding{
+			{Exchange: InputQ2Exchange, RoutingKey: ""},
+		},
+		Outputs: map[protocol.DatasetType]OutputRoute{
+			protocol.DatasetTypeTransactionItems:     {Exchange: Q2GroupedExchange, RoutingKey: ""},
+		},
+		DeclareExchs: []string{
+			InputQ2Exchange, Q2GroupedExchange,
+		},
+	}
+}
+
+func BuildWiringForAggregateQ2(role NodeRole, nodeID string) *NodeWiring {
+	return &NodeWiring{
+		Role:      role,
+		NodeID:    nodeID,
+		QueueName: string(role) + "." + nodeID, // e.g. "filter_year.01"
+		Bindings: []Binding{
+			{Exchange: InputQ2Exchange, RoutingKey: ""},
+		},
+		Outputs: map[protocol.DatasetType]OutputRoute{
+			protocol.DatasetTypeTransactionItems:     {Exchange: Q2GroupedExchange, RoutingKey: ""},
+		},
+		DeclareExchs: []string{
+			InputQ2Exchange, Q2GroupedExchange,
 		},
 	}
 }

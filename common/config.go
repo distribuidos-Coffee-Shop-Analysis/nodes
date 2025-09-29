@@ -1,6 +1,8 @@
 package common
 
 import (
+	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -156,37 +158,37 @@ type OutputRoute struct {
 
 const (
 	// Exchanges
-	
+
 	// Filer by year
-	InputExchangeYear         = "transactions_and_transaction_items_exchange"
+	InputExchangeYear        = "transactions_and_transaction_items_exchange"
 	TransactionsExchange     = "transactions_exchange"
 	TransactionItemsExchange = "transaction_items_exchange"
 
 	// Filter by hour
-	InputExchangeHour = TransactionsExchange
-	TransactionsFilteredHourExchange  = "transactions_filtered_hour_exchange"
+	InputExchangeHour                = TransactionsExchange
+	TransactionsFilteredHourExchange = "transactions_filtered_hour_exchange"
 
 	// Filter by amount
-	InputExchangeAmount = TransactionsFilteredHourExchange 
-	RepliesExchange = "replies_exchange" // finish Q1
+	InputExchangeAmount = TransactionsFilteredHourExchange
+	RepliesExchange     = "replies_exchange" // finish Q1
 
 	// Q2
-	InputQ2Exchange = TransactionItemsExchange
-	Q2GroupedExchange = "q2_grouped_exchange"
+	InputQ2Exchange      = TransactionItemsExchange
+	Q2GroupedExchange    = "q2_grouped_exchange"
 	Q2AggregatedExchange = "q2_aggregated_exchange"
-	Q2JoinExchange = "q2_joined_exchange"
+	Q2JoinExchange       = "q2_joined_exchange"
 
 	// Q3
-	InputQ3Exchange = TransactionsFilteredHourExchange
-	Q3GroupedExchange = "q3_grouped_exchange"
+	InputQ3Exchange      = TransactionsFilteredHourExchange
+	Q3GroupedExchange    = "q3_grouped_exchange"
 	Q3AggregatedExchange = "q3_aggregated_exchange"
-	Q3JoinExchange = "q3_joined_exchange"
+	Q3JoinExchange       = "q3_joined_exchange"
 
 	// Q4
-	InputQ4Exchange = TransactionsExchange
-	Q4GroupedExchange = "q4_grouped_exchange"
+	InputQ4Exchange      = TransactionsExchange
+	Q4GroupedExchange    = "q4_grouped_exchange"
 	Q4AggregatedExchange = "q4_aggregated_exchange"
-	Q4JoinUsersExchange = "q4_joined_users_exchange"
+	Q4JoinUsersExchange  = "q4_joined_users_exchange"
 	Q4JoinStoresExchange = "q4_joined_stores_exchange"
 )
 
@@ -196,92 +198,68 @@ type NodeWiring struct {
 	QueueName    string                               // se calcula role.nodeID
 	Bindings     []Binding                            // de dónde leo
 	Outputs      map[protocol.DatasetType]OutputRoute // a dónde publico por dataset
-	DeclareExchs []string                             // exchanges a declarar (durable)
+	DeclareExchs []string                             // exchanges a declarar
 }
 
-func BuildWiringForFilterYear(role NodeRole, nodeID string) *NodeWiring {
-	return &NodeWiring{
-		Role:      role,
-		NodeID:    nodeID,
-		QueueName: string(role) + "." + nodeID, // e.g. "filter_year.01"
-		Bindings: []Binding{
-			{Exchange: InputExchangeYear, RoutingKey: ""},
-		},
-		Outputs: map[protocol.DatasetType]OutputRoute{
-			protocol.DatasetTypeTransactions:     {Exchange: TransactionsExchange, RoutingKey: ""},
-			protocol.DatasetTypeTransactionItems: {Exchange: TransactionItemsExchange, RoutingKey: ""},
-		},
-		DeclareExchs: []string{
-			InputExchangeYear, TransactionsExchange, TransactionItemsExchange,
-		},
+// JSON configuration for node wiring
+type WiringConfig struct {
+	Role             string                 `json:"role"`
+	Bindings         []Binding              `json:"bindings"`
+	Outputs          map[string]OutputRoute `json:"outputs"`
+	DeclareExchanges []string               `json:"declare_exchanges"`
+}
+
+// creates NodeWiring from JSON configuration
+func BuildWiringFromConfig(configPath string, nodeID string) (*NodeWiring, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("error reading wiring config file %s: %v", configPath, err)
 	}
-}
 
-func BuildWiringForFilterHour(role NodeRole, nodeID string) *NodeWiring {
-	return &NodeWiring{
-		Role:      role,
-		NodeID:    nodeID,
-		QueueName: string(role) + "." + nodeID, // e.g. "filter_hour.01"
-		Bindings: []Binding{
-			{Exchange: InputExchangeHour, RoutingKey: ""},
-		},
-		Outputs: map[protocol.DatasetType]OutputRoute{
-			protocol.DatasetTypeTransactions:     {Exchange: TransactionsFilteredHourExchange, RoutingKey: ""},
-		},
-		DeclareExchs: []string{
-			InputExchangeHour, TransactionsFilteredHourExchange,
-		},
+	var config WiringConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("error parsing wiring config JSON: %v", err)
 	}
-}
 
-func BuildWiringForFilterAmount(nodeID string) *NodeWiring {
-	return &NodeWiring{
-		Role:      RoleFilterAmount,
-		NodeID:    nodeID,
-		QueueName: string(RoleFilterAmount) + "." + nodeID, // e.g. "filter_amount.01"
-		Bindings: []Binding{
-			{Exchange: InputExchangeAmount, RoutingKey: ""},
-		},
-		Outputs: map[protocol.DatasetType]OutputRoute{
-			protocol.DatasetTypeTransactions:     {Exchange: RepliesExchange, RoutingKey: ""},
-		},
-		DeclareExchs: []string{
-			InputExchangeAmount, RepliesExchange,
-		},
+	outputs := make(map[protocol.DatasetType]OutputRoute)
+	for datasetTypeStr, route := range config.Outputs {
+		datasetType := getDatasetTypeFromString(datasetTypeStr)
+		outputs[datasetType] = route
 	}
+
+	return &NodeWiring{
+		Role:         NodeRole(config.Role),
+		NodeID:       nodeID,
+		QueueName:    config.Role + "." + nodeID,
+		Bindings:     config.Bindings,
+		Outputs:      outputs,
+		DeclareExchs: config.DeclareExchanges,
+	}, nil
 }
 
-// Q2
-func BuildWiringForGroupByQ2(role NodeRole, nodeID string) *NodeWiring {
-	return &NodeWiring{
-		Role:      role,
-		NodeID:    nodeID,
-		QueueName: string(role) + "." + nodeID, // e.g. "filter_year.01"
-		Bindings: []Binding{
-			{Exchange: InputQ2Exchange, RoutingKey: ""},
-		},
-		Outputs: map[protocol.DatasetType]OutputRoute{
-			protocol.DatasetTypeTransactionItems:     {Exchange: Q2GroupedExchange, RoutingKey: ""},
-		},
-		DeclareExchs: []string{
-			InputQ2Exchange, Q2GroupedExchange,
-		},
-	}
-}
-
-func BuildWiringForAggregateQ2(role NodeRole, nodeID string) *NodeWiring {
-	return &NodeWiring{
-		Role:      role,
-		NodeID:    nodeID,
-		QueueName: string(role) + "." + nodeID, // e.g. "filter_year.01"
-		Bindings: []Binding{
-			{Exchange: InputQ2Exchange, RoutingKey: ""},
-		},
-		Outputs: map[protocol.DatasetType]OutputRoute{
-			protocol.DatasetTypeTransactionItems:     {Exchange: Q2GroupedExchange, RoutingKey: ""},
-		},
-		DeclareExchs: []string{
-			InputQ2Exchange, Q2GroupedExchange,
-		},
+// getDatasetTypeFromString converts string to DatasetType
+func getDatasetTypeFromString(datasetTypeStr string) protocol.DatasetType {
+	switch datasetTypeStr {
+	case "TRANSACTIONS":
+		return protocol.DatasetTypeTransactions
+	case "TRANSACTION_ITEMS":
+		return protocol.DatasetTypeTransactionItems
+	case "MENU_ITEMS":
+		return protocol.DatasetTypeMenuItems
+	case "STORES":
+		return protocol.DatasetTypeStores
+	case "USERS":
+		return protocol.DatasetTypeUsers
+	case "Q1":
+		return protocol.DatasetTypeQ1
+	case "Q2":
+		return protocol.DatasetTypeQ2
+	case "Q3":
+		return protocol.DatasetTypeQ3
+	case "Q4":
+		return protocol.DatasetTypeQ4
+	default:
+		log.Printf("action: convert_dataset_type | result: warning | unknown_type: %s", datasetTypeStr)
+		return protocol.DatasetTypeTransactions
 	}
 }

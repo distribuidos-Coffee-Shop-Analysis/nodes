@@ -1,0 +1,19 @@
+{
+  "role": "q3_aggregate",
+  "bindings": [
+    {
+      "exchange": "q3_grouped_exchange",
+      "routing_key": ""
+    }
+  ],
+  "outputs": {
+    "TRANSACTIONS": {
+      "exchange": "q3_aggregated_exchange",
+      "routing_key": ""
+    }
+  },
+  "declare_exchanges": [
+    "q3_grouped_exchange",
+    "q3_aggregated_exchange"
+  ]
+}

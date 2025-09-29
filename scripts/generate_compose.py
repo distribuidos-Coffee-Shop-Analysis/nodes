@@ -9,6 +9,7 @@ COMMON_ENV = [
     "RABBITMQ_PASSWORD=admin",
 ]
 
+
 def parse_pairs(pairs):
     out = {}
     for p in pairs:
@@ -17,6 +18,7 @@ def parse_pairs(pairs):
         t, n = p.split("=", 1)
         out[t.strip()] = int(n.strip())
     return out
+
 
 def role_from_type(node_type: str) -> str:
     mapping = {
@@ -36,8 +38,10 @@ def role_from_type(node_type: str) -> str:
     }
     return mapping.get(node_type, node_type)
 
+
 def make_service_name(node_type: str, idx: int) -> str:
     return f"{node_type}-{idx:02d}"
+
 
 def generate_compose(output_file, type_counts):
     compose = {
@@ -63,15 +67,19 @@ def generate_compose(output_file, type_counts):
                 "build": ".",
                 "environment": env,
                 "networks": ["coffee_net"],
+                "volumes": [f"./config/{role}.json:/app/config/{role}.json:ro"],
             }
             compose["services"][svc_name] = service
 
     with open(output_file, "w") as f:
         yaml.dump(compose, f, sort_keys=False)
 
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Uso: python3 generate_compose_nodes.py <output_file> <tipo=cantidad> [<tipo=cantidad> ...]")
+        print(
+            "Uso: python3 generate_compose_nodes.py <output_file> <tipo=cantidad> [<tipo=cantidad> ...]"
+        )
         sys.exit(1)
 
     output_file = sys.argv[1]

@@ -1,0 +1,19 @@
+{
+  "role": "filter_amount",
+  "bindings": [
+    {
+      "exchange": "transactions_filtered_hour_exchange",
+      "routing_key": ""
+    }
+  ],
+  "outputs": {
+    "TRANSACTIONS": {
+      "exchange": "replies_exchange",
+      "routing_key": ""
+    }
+  },
+  "declare_exchanges": [
+    "transactions_filtered_hour_exchange",
+    "replies_exchange"
+  ]
+}

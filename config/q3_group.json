@@ -1,0 +1,19 @@
+{
+  "role": "q3_group",
+  "bindings": [
+    {
+      "exchange": "transactions_filtered_hour_exchange",
+      "routing_key": ""
+    }
+  ],
+  "outputs": {
+    "TRANSACTIONS": {
+      "exchange": "q3_grouped_exchange",
+      "routing_key": ""
+    }
+  },
+  "declare_exchanges": [
+    "transactions_filtered_hour_exchange",
+    "q3_grouped_exchange"
+  ]
+}

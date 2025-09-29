@@ -16,6 +16,7 @@ COPY common/ ./common/
 COPY protocol/ ./protocol/
 COPY middleware/ ./middleware/
 COPY node/ ./node/
+COPY config/ ./config/
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
@@ -31,6 +32,8 @@ WORKDIR /root/
 COPY --from=builder /app/main .
 # Copy configuration file
 COPY config.ini .
+# Copy wiring configuration directory
+COPY --from=builder /app/config ./config/
 
 
 # Expose port (if needed for health checks)

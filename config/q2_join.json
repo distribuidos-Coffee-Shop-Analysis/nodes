@@ -1,0 +1,19 @@
+{
+  "role": "q2_join",
+  "bindings": [
+    {
+      "exchange": "q2_aggregated_exchange",
+      "routing_key": ""
+    }
+  ],
+  "outputs": {
+    "Q2": {
+      "exchange": "q2_joined_exchange",
+      "routing_key": ""
+    }
+  },
+  "declare_exchanges": [
+    "q2_aggregated_exchange",
+    "q2_joined_exchange"
+  ]
+}

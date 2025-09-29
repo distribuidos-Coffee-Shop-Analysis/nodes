@@ -1,0 +1,19 @@
+{
+  "role": "q4_join_stores",
+  "bindings": [
+    {
+      "exchange": "q4_joined_users_exchange",
+      "routing_key": ""
+    }
+  ],
+  "outputs": {
+    "Q4": {
+      "exchange": "q4_joined_stores_exchange",
+      "routing_key": ""
+    }
+  },
+  "declare_exchanges": [
+    "q4_joined_users_exchange",
+    "q4_joined_stores_exchange"
+  ]
+}

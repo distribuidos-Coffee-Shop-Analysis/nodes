@@ -1,0 +1,19 @@
+{
+  "role": "q2_group",
+  "bindings": [
+    {
+      "exchange": "transaction_items_exchange",
+      "routing_key": ""
+    }
+  ],
+  "outputs": {
+    "TRANSACTION_ITEMS": {
+      "exchange": "q2_grouped_exchange",
+      "routing_key": ""
+    }
+  },
+  "declare_exchanges": [
+    "transaction_items_exchange",
+    "q2_grouped_exchange"
+  ]
+}

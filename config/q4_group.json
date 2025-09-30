@@ -1,5 +1,6 @@
 {
   "role": "q4_group",
+  "input_queue_name": "q4_queue",
   "bindings": [
     {
       "exchange": "transactions_exchange",

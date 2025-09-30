@@ -1,5 +1,6 @@
 {
   "role": "filter_hour",
+  "input_queue_name": "q1_q3_queue",
   "bindings": [
     {
       "exchange": "transactions_exchange",

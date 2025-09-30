@@ -157,17 +157,18 @@ type OutputRoute struct {
 }
 
 type NodeWiring struct {
-	Role         NodeRole
-	NodeID       string
-	QueueName    string                               // se calcula role.nodeID
-	Bindings     []Binding                            // de dónde leo
-	Outputs      map[protocol.DatasetType]OutputRoute // a dónde publico por dataset
-	DeclareExchs []string                             // exchanges a declarar
+	Role           NodeRole
+	NodeID         string
+	QueueName      string                               // se calcula role.nodeID
+	Bindings       []Binding                            // de dónde leo
+	Outputs        map[protocol.DatasetType]OutputRoute // a dónde publico por dataset
+	DeclareExchs   []string                             // exchanges a declarar
 }
 
 // JSON configuration for node wiring
 type WiringConfig struct {
 	Role             string                 `json:"role"`
+	InputQueueName       string              `json:"input_queue_name"`
 	Bindings         []Binding              `json:"bindings"`
 	Outputs          map[string]OutputRoute `json:"outputs"`
 	DeclareExchanges []string               `json:"declare_exchanges"`
@@ -191,10 +192,15 @@ func BuildWiringFromConfig(configPath string, nodeID string) (*NodeWiring, error
 		outputs[datasetType] = route
 	}
 
+	queueName := config.InputQueueName
+	if queueName == "" {
+		queueName = config.Role + "." + nodeID
+	}
+
 	return &NodeWiring{
 		Role:         NodeRole(config.Role),
 		NodeID:       nodeID,
-		QueueName:    config.Role + "." + nodeID,
+		QueueName:    queueName,
 		Bindings:     config.Bindings,
 		Outputs:      outputs,
 		DeclareExchs: config.DeclareExchanges,

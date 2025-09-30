@@ -1,5 +1,6 @@
 {
   "role": "q2_group",
+  "input_queue_name": "q2_queue",
   "bindings": [
     {
       "exchange": "transaction_items_exchange",

@@ -1,10 +1,12 @@
-package handlers
+package node
 
 import (
 	"sync"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/handlers/filters"
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/filters"
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/handlers"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 	"github.com/rabbitmq/amqp091-go"
 )
@@ -20,19 +22,26 @@ type Handler interface {
 	// It may mutate the batch or generate new ones; it returns the batch(es) to publish.
 	// If there is nothing to emit, it may return nil, nil.
 	Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection, wiring *common.NodeWiring, clientWG *sync.WaitGroup) error
+
+	StartHandler(queueManager *middleware.QueueManager, clientWG *sync.WaitGroup) error
+
 }
 
 func NewHandler(role common.NodeRole) Handler {
 	switch role {
 	case common.RoleFilterYear:
 		filter := filters.NewYearFilter(2024, 2025)
-		return NewTransactionFilterHandler(filter)
+		return handlers.NewTransactionFilterHandler(filter)
 	case common.RoleFilterHour:
 		filter := filters.NewHourFilter(6, 23)
-		return NewTransactionFilterHandler(filter)
+		return handlers.NewTransactionFilterHandler(filter)
 	case common.RoleFilterAmount:
 		filter := filters.NewAmountFilter(75)
-		return NewTransactionFilterHandler(filter)
+		return handlers.NewTransactionFilterHandler(filter)
+	case common.RoleGroupByQ4:
+		//groupby := handlers.NewQuarterFilter(4)
+		//return handlers.NewTransactionFilterHandler(groupby)
+		return nil
 	default:
 		panic("unknown role for handler")
 	}

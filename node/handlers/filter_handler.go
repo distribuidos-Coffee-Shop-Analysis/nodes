@@ -6,9 +6,10 @@ import (
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/handlers/filters"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/filters"
 	"github.com/rabbitmq/amqp091-go"
+
 )
 
 type TransactionFilterHandler struct {
@@ -24,6 +25,25 @@ func NewTransactionFilterHandler(filter filters.RecordFilter) *TransactionFilter
 func (h *TransactionFilterHandler) Name() string {
 	return "transaction_filter_" + h.filter.Name()
 }
+
+
+// startTransactionFilterHandler starts the transaction filter handler
+func (h *TransactionFilterHandler) StartHandler(queueManager *middleware.QueueManager,clientWg *sync.WaitGroup) error {
+	
+	// Consume with callback (blocks until StopConsuming or error)
+	err := queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage) {
+	
+		go h.Handle(batchMessage, queueManager.Connection, 
+			queueManager.Wiring, clientWg)
+		
+	})
+	if err != nil {
+		log.Printf("action: node_consume | result: fail | error: %v", err)
+		return err
+	}
+	return nil
+}
+
 
 // handleTransactionBatch handles a transaction batch - filter by year and route to output queues
 func (tfh *TransactionFilterHandler) Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,

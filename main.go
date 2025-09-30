@@ -10,7 +10,6 @@ import (
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node"
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/handlers"
 )
 
 func main() {
@@ -27,7 +26,7 @@ func main() {
 		return
 	}
 
-	handler := handlers.NewHandler(nodeConfig.Role)
+	handler := node.NewHandler(nodeConfig.Role)
 	// Create filter node
 	node := node.NewNode(handler, middleware.NewQueueManagerWithWiring(wiring))
 

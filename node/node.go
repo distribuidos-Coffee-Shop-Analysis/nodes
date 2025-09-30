@@ -4,18 +4,16 @@ import (
 	"log"
 	"sync"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/handlers"
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
 // Node represents a simple filter node that processes transactions from RabbitMQ queues
 type Node struct {
 	queueManager      *middleware.QueueManager
-	handler           handlers.Handler
+	handler           Handler
 	clientWg   sync.WaitGroup // Track active goroutines
 }
 
-func NewNode(handler handlers.Handler, queueManager *middleware.QueueManager) *Node {
+func NewNode(handler Handler, queueManager *middleware.QueueManager) *Node {
 	fn := &Node{
 		queueManager:      queueManager,
 		handler:           handler,
@@ -35,8 +33,8 @@ func (node *Node) Run() error {
 		return err
 	}
 
-	// Start transaction filter handler
-	if err := node.startHandler(); err != nil {
+	// Start handler depending on its type
+	if err := node.handler.StartHandler(node.queueManager, &node.clientWg); err != nil {
 		log.Printf("action: start_transaction_filter_handler | result: fail | error: %v", err)
 		return err
 	}
@@ -47,24 +45,7 @@ func (node *Node) Run() error {
 	return nil
 }
 
-// startTransactionFilterHandler starts the transaction filter handler
-func (node *Node) startHandler() error {
-	
-	log.Println("action: transaction_filter_handler_started | result: success")
 
-	// Consume with callback (blocks until StopConsuming or error)
-	err := node.queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage) {
-	
-		go node.handler.Handle(batchMessage, node.queueManager.Connection, 
-			node.queueManager.Wiring, &node.clientWg)
-		
-	})
-	if err != nil {
-		log.Printf("action: node_consume | result: fail | error: %v", err)
-		return err
-	}
-	return nil
-}
 
 // Shutdown gracefully shuts down the filter node
 func (n *Node) Shutdown() {

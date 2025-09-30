@@ -75,6 +75,8 @@ func (tfh *TransactionFilterHandler) Handle(batchMessage *protocol.BatchMessage,
 		return err
 	}
 
+	publisher.Close() // Close channel after publishing
+
 	msg.Ack(false) // Acknowledge the message
 
 	return nil

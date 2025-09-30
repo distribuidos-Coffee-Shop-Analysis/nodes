@@ -41,3 +41,7 @@ func (p *Publisher) publish(exchange, rk string, body []byte) error {
 		Body:         body,
 	})
 }
+
+func (p *Publisher) Close() {
+	p.channel.Close()
+}

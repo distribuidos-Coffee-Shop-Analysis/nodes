@@ -70,9 +70,6 @@ func (g *Q4GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 	return result, nil
 }
 
-func (g *Q4GroupBy) Reset() {
-	log.Printf("action: groupby_q4_reset | result: success | note: stateless, nothing to reset")
-}
 
 // splitGroupKey splits the composite key "storeID|userID" into parts
 func splitGroupKey(key string) []string {

@@ -7,7 +7,7 @@
     }
   ],
   "outputs": {
-    "Q3": {
+    "Q3AggWithName": {
       "exchange": "q3_joined_exchange",
       "routing_key": ""
     }

@@ -8,7 +8,7 @@
     }
   ],
   "outputs": {
-    "TRANSACTION_ITEMS": {
+    "Q2Groups": {
       "exchange": "q2_grouped_exchange",
       "routing_key": ""
     }

@@ -7,7 +7,7 @@
     }
   ],
   "outputs": {
-    "TRANSACTION_ITEMS": {
+    "Q2Agg": {
       "exchange": "q2_aggregated_exchange",
       "routing_key": ""
     }

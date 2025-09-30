@@ -59,13 +59,12 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 
 	batchIndex := batchMessage.BatchIndex
 
-	groupByBatch := *protocol.NewGroupByBatch(
+	groupByBatch := protocol.NewGroupByBatch(
 		batchIndex,
 		groupedRecords,
 		batchMessage.EOF,
-	).Serialize()
+	)
 
-	
 	publisher, err := middleware.NewPublisher(connection, wiring)
 	if err != nil {
 		log.Printf("action: create_publisher | groupby: %s | result: fail | error: %v", h.groupby.Name(), err)
@@ -73,7 +72,7 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 		return err
 	}
 
-	if err := publisher.publish(groupByBatch); err != nil {
+	if err := publisher.SendToDatasetOutputExchanges(groupByBatch); err != nil {
 		log.Printf("action: groupby_publish | groupby: %s | result: fail | error: %v", h.groupby.Name(), err)
 		msg.Nack(false, true) 
 		return err
@@ -85,12 +84,8 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 		"batch_index: %d | record_count: %d | eof: %t", 
 		h.groupby.Name(), batchIndex, len(groupedRecords), batchMessage.EOF)
 
-	msg.Ack(false) 
+	msg.Ack(false) // Acknowledge msg
 
-	if batchMessage.EOF {
-		h.groupby.Reset()
-		log.Printf("action: groupby_reset | groupby: %s | result: success", h.groupby.Name())
-	}
-
+	
 	return nil
 }

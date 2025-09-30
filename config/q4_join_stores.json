@@ -7,7 +7,7 @@
     }
   ],
   "outputs": {
-    "Q4": {
+    "Q4AggWithUserAndStore": {
       "exchange": "q4_joined_stores_exchange",
       "routing_key": ""
     }

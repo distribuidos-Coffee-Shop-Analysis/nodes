@@ -8,7 +8,7 @@
     }
   ],
   "outputs": {
-    "TRANSACTIONS": {
+    "Q3Groups": {
       "exchange": "q3_grouped_exchange",
       "routing_key": ""
     }

@@ -8,7 +8,7 @@
     }
   ],
   "outputs": {
-    "TRANSACTIONS": {
+    "Q4Groups": {
       "exchange": "q4_grouped_exchange",
       "routing_key": ""
     }

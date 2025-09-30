@@ -7,7 +7,7 @@
     }
   ],
   "outputs": {
-    "USERS": {
+    "Q4AggWithUser": {
       "exchange": "q4_joined_users_exchange",
       "routing_key": ""
     }

@@ -231,12 +231,26 @@ func getDatasetTypeFromString(datasetTypeStr string) protocol.DatasetType {
 		return protocol.DatasetTypeUsers
 	case "Q1":
 		return protocol.DatasetTypeQ1
-	case "Q2":
-		return protocol.DatasetTypeQ2
-	case "Q3":
-		return protocol.DatasetTypeQ3
-	case "Q4":
-		return protocol.DatasetTypeQ4
+	case "Q2Groups":
+		return protocol.DatasetTypeQ2Groups
+	case "Q2Agg":
+		return protocol.DatasetTypeQ2Agg
+	case "Q2AggWithName":
+		return protocol.DatasetTypeQ2AggWithName
+	case "Q3Groups":
+		return protocol.DatasetTypeQ3Groups
+	case "Q3Agg":
+		return protocol.DatasetTypeQ3Agg
+	case "Q3AggWithName":
+		return protocol.DatasetTypeQ3AggWithName
+	case "Q4Groups":
+		return protocol.DatasetTypeQ4Groups
+	case "Q4Agg":
+		return protocol.DatasetTypeQ4Agg
+	case "Q4AggWithUser":
+		return protocol.DatasetTypeQ4AggWithUser
+	case "Q4AggWithUserAndStore":
+		return protocol.DatasetTypeQ4AggWithUserAndStore
 	default:
 		log.Printf("action: convert_dataset_type | result: warning | unknown_type: %s", datasetTypeStr)
 		return protocol.DatasetTypeTransactions

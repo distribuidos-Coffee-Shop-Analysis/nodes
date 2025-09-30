@@ -17,9 +17,7 @@
       "routing_key": ""
     }
   },
-  "declare_exchanges": [
-    "transactions_and_transaction_items_exchange",
-    "transactions_exchange",
+  "declare_exchanges": ["transactions_exchange",
     "transaction_items_exchange"
   ]
 }

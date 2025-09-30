@@ -13,5 +13,8 @@
       "routing_key": ""
     }
   },
-  "declare_exchanges": ["transactions_filtered_hour_exchange"]
+  "declare_exchanges": [
+    "transactions_exchange",
+    "transactions_filtered_hour_exchange"
+  ]
 }

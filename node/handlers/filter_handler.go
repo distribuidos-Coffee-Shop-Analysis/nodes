@@ -6,10 +6,9 @@ import (
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/filters"
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 	"github.com/rabbitmq/amqp091-go"
-
 )
 
 type TransactionFilterHandler struct {
@@ -26,16 +25,15 @@ func (h *TransactionFilterHandler) Name() string {
 	return "transaction_filter_" + h.filter.Name()
 }
 
-
 // startTransactionFilterHandler starts the transaction filter handler
-func (h *TransactionFilterHandler) StartHandler(queueManager *middleware.QueueManager,clientWg *sync.WaitGroup) error {
-	
+func (h *TransactionFilterHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
+
 	// Consume with callback (blocks until StopConsuming or error)
-	err := queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage) {
-	
-		go h.Handle(batchMessage, queueManager.Connection, 
-			queueManager.Wiring, clientWg)
-		
+	err := queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
+
+		go h.Handle(batchMessage, queueManager.Connection,
+			queueManager.Wiring, clientWg, delivery)
+
 	})
 	if err != nil {
 		log.Printf("action: node_consume | result: fail | error: %v", err)
@@ -44,22 +42,12 @@ func (h *TransactionFilterHandler) StartHandler(queueManager *middleware.QueueMa
 	return nil
 }
 
-
 // handleTransactionBatch handles a transaction batch - filter by year and route to output queues
 func (tfh *TransactionFilterHandler) Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
-	wiring *common.NodeWiring, clientWG *sync.WaitGroup) error {
+	wiring *common.NodeWiring, clientWG *sync.WaitGroup, msg amqp091.Delivery) error {
 
 	clientWG.Add(1)
 	defer clientWG.Done()
-
-	// Validate dataset type - only process TRANSACTIONS and TRANSACTION_ITEMS
-	if batchMessage.DatasetType != protocol.DatasetTypeTransactions &&
-		batchMessage.DatasetType != protocol.DatasetTypeTransactionItems {
-		log.Printf("action: batch_dropped | result: success | "+
-			"dataset_type: %s | reason: invalid_dataset_type | "+
-			"record_count: %d", batchMessage.DatasetType, len(batchMessage.Records))
-		return nil
-	}
 
 	log.Printf("action: transaction_batch_received | result: success | "+
 		"dataset_type: %s | record_count: %d | eof: %t",
@@ -77,13 +65,17 @@ func (tfh *TransactionFilterHandler) Handle(batchMessage *protocol.BatchMessage,
 	publisher, err := middleware.NewPublisher(connection, wiring)
 	if err != nil {
 		log.Printf("action: create publisher | result: fail | error: %v", err)
+		msg.Nack(false, true) // Reject and requeue
 		return err
 	}
 
 	if err := publisher.SendToDatasetOutputExchanges(&out); err != nil {
 		log.Printf("action: node_publish | result: fail | error: %v", err)
+		msg.Nack(false, true) // Reject and requeue
 		return err
 	}
+
+	msg.Ack(false) // Acknowledge the message
 
 	return nil
 }

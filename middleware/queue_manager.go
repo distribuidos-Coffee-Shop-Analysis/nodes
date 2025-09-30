@@ -94,7 +94,7 @@ func (qm *QueueManager) Disconnect() {
 }
 
 // StartConsuming starts consuming from configured input queue and calls callback for each message
-func (qm *QueueManager) StartConsuming(callback func(*protocol.BatchMessage)) error {
+func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessage, delivery amqp.Delivery)) error {
 	msgs, err := qm.channel.Consume(qm.Wiring.QueueName, "", false, false, false, false, nil)
 	if err != nil {
 		log.Printf("action: start_consuming | result: fail | error: %v", err)
@@ -126,24 +126,21 @@ func (qm *QueueManager) StartConsuming(callback func(*protocol.BatchMessage)) er
 				msgType := msg.Body[0]
 				if msgType == protocol.MessageTypeBatch {
 					batchMessage, err = protocol.BatchMessageFromData(msg.Body)
+					if err != nil {
+						log.Printf("failed to parse batch message: %v", err)
+						msg.Nack(false, true) // Reject and requeue
+					}
 				} else {
-					err = fmt.Errorf("unknown message type: %d", msgType)
+					log.Printf("unknown message type: %d", msgType)
 				}
 			} else {
-				err = fmt.Errorf("empty message body")
-			}
-
-			if err != nil {
-				log.Printf("action: process_transaction | result: fail | error: %v", err)
-				msg.Nack(false, true) // Reject and requeue
-				return
+				log.Printf("empty message body")
 			}
 
 			// Call the callback with the parsed data
-			callback(batchMessage)
+			// and acknowledge the message if processed successfully
+			callback(batchMessage, msg)
 
-			// Acknowledge the message
-			msg.Ack(false)
 		}()
 	}
 
@@ -156,20 +153,6 @@ func (qm *QueueManager) StopConsuming() {
 	log.Println("action: stop_consuming | result: success")
 }
 
-// func (qm *QueueManager) SendToDatasetOutputExchanges(b *protocol.BatchMessage) error {
-// 	route, ok := qm.wiring.Outputs[b.DatasetType]
-// 	if !ok {
-// 		return fmt.Errorf("no output route for dataset %v in role %s", b.DatasetType, qm.wiring.Role)
-// 	}
-// 	return qm.publish(route.Exchange, route.RoutingKey, qm.encodeToByteArray(b))
-// }
-
-// func (qm *QueueManager) publish(exchange, rk string, body []byte) error {
-// 	return qm.channel.Publish(exchange, rk, false, false, amqp.Publishing{
-// 		DeliveryMode: amqp.Persistent,
-// 		Body:         body,
-// 	})
-// }
 
 // MessageMiddleware interface methods
 

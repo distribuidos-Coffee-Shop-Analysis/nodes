@@ -21,10 +21,9 @@ type Handler interface {
 	// Handle processes a batch WITHOUT side effects from IO (ideally pure).
 	// It may mutate the batch or generate new ones; it returns the batch(es) to publish.
 	// If there is nothing to emit, it may return nil, nil.
-	Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection, wiring *common.NodeWiring, clientWG *sync.WaitGroup) error
+	Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection, wiring *common.NodeWiring, clientWG *sync.WaitGroup, delivery amqp091.Delivery) error
 
 	StartHandler(queueManager *middleware.QueueManager, clientWG *sync.WaitGroup) error
-
 }
 
 func NewHandler(role common.NodeRole) Handler {

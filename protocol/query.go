@@ -120,6 +120,46 @@ func NewQ3RecordFromParts(parts []string) (*Q3Record, error) {
 	}, nil
 }
 
+// Q4GroupedRecord represents grouped transaction data: store_id, user_id, transaction_count
+// This is the output of the GroupBy Q4 node (before the final join with stores/users)
+type Q4GroupedRecord struct {
+	StoreID          string
+	UserID           string
+	TransactionCount string
+}
+
+const Q4GroupedRecordParts = 3
+
+// Serialize returns the string representation of the Q4 grouped record
+func (q *Q4GroupedRecord) Serialize() string {
+	return fmt.Sprintf("%s|%s|%s", q.StoreID, q.UserID, q.TransactionCount)
+}
+
+// GetType returns the dataset type for Q4 grouped records
+func (q *Q4GroupedRecord) GetType() DatasetType {
+	return DatasetTypeQ4
+}
+
+// NewQ4GroupedRecordFromString creates a Q4GroupedRecord from a string
+func NewQ4GroupedRecordFromString(data string) (*Q4GroupedRecord, error) {
+	parts := strings.Split(data, "|")
+	return NewQ4GroupedRecordFromParts(parts)
+}
+
+// NewQ4GroupedRecordFromParts creates a Q4GroupedRecord from string parts
+func NewQ4GroupedRecordFromParts(parts []string) (*Q4GroupedRecord, error) {
+	if len(parts) < Q4GroupedRecordParts {
+		return nil, fmt.Errorf("invalid Q4GroupedRecord format: expected %d fields, got %d",
+			Q4GroupedRecordParts, len(parts))
+	}
+
+	return &Q4GroupedRecord{
+		StoreID:          parts[0],
+		UserID:           parts[1],
+		TransactionCount: parts[2],
+	}, nil
+}
+
 // Q4Record represents Q4 record: store_name, birthdate
 type Q4Record struct {
 	StoreName string

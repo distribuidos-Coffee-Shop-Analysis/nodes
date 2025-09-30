@@ -11,15 +11,17 @@ import (
 type BatchMessage struct {
 	Type        int
 	DatasetType DatasetType
+	BatchIndex  int
 	Records     []Record
 	EOF         bool
 }
 
 // NewBatchMessage creates a new batch message
-func NewBatchMessage(datasetType DatasetType, records []Record, eof bool) *BatchMessage {
+func NewBatchMessage(datasetType DatasetType, batchIndex int, records []Record, eof bool) *BatchMessage {
 	return &BatchMessage{
 		Type:        MessageTypeBatch,
 		DatasetType: datasetType,
+		BatchIndex:  batchIndex,
 		Records:     records,
 		EOF:         eof,
 	}
@@ -41,12 +43,17 @@ func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 
 	log.Printf("action: parse_batch_message | dataset_type: %d | content: %s", datasetType, content)
 
-	if len(parts) < 2 {
-		return nil, fmt.Errorf("invalid batch message format: missing EOF and record count")
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("invalid batch message format: missing BatchIndex, EOF or RecordCount")
 	}
 
-	eof := parts[0] == "1"
-	recordCount, err := strconv.Atoi(parts[1])
+	batchIndex, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("invalid batch index: %v", err)
+	}
+
+	eof := parts[1] == "1"
+	recordCount, err := strconv.Atoi(parts[2])
 	if err != nil {
 		return nil, fmt.Errorf("invalid record count: %v", err)
 	}
@@ -56,10 +63,10 @@ func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 		return nil, err
 	}
 
-	log.Printf("action: parse_batch_message | eof: %t | record_count: %d | fields_per_record: %d",
-		eof, recordCount, fieldsPerRecord)
+	log.Printf("action: parse_batch_message | batch_index: %d | eof: %t | record_count: %d | fields_per_record: %d",
+		batchIndex, eof, recordCount, fieldsPerRecord)
 
-	dataParts := parts[2:] // Skip EOF and record_count
+	dataParts := parts[3:] // Skip BatchIndex, EOF and RecordCount
 
 	records := make([]Record, 0, recordCount)
 	for i := 0; i < recordCount; i++ {
@@ -85,6 +92,7 @@ func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 	return &BatchMessage{
 		Type:        MessageTypeBatch,
 		DatasetType: datasetType,
+		BatchIndex:  batchIndex,
 		Records:     records,
 		EOF:         eof,
 	}, nil

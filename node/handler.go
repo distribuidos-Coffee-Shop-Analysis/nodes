@@ -31,13 +31,13 @@ func NewHandler(role common.NodeRole) Handler {
 	switch role {
 	case common.RoleFilterYear:
 		filter := filters.NewYearFilter(2024, 2025)
-		return handlers.NewTransactionFilterHandler(filter)
+		return handlers.NewFilterHandler(filter)
 	case common.RoleFilterHour:
 		filter := filters.NewHourFilter(6, 23)
-		return handlers.NewTransactionFilterHandler(filter)
+		return handlers.NewFilterHandler(filter)
 	case common.RoleFilterAmount:
 		filter := filters.NewAmountFilter(75)
-		return handlers.NewTransactionFilterHandler(filter)
+		return handlers.NewFilterHandler(filter)
 	case common.RoleGroupByQ4:
 		groupby := groupbys.NewQ4GroupBy()
 		return handlers.NewGroupByHandler(groupby)

@@ -11,22 +11,22 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 )
 
-type TransactionFilterHandler struct {
+type FilterHandler struct {
 	filter filters.RecordFilter
 }
 
-func NewTransactionFilterHandler(filter filters.RecordFilter) *TransactionFilterHandler {
-	return &TransactionFilterHandler{
+func NewFilterHandler(filter filters.RecordFilter) *FilterHandler {
+	return &FilterHandler{
 		filter: filter,
 	}
 }
 
-func (h *TransactionFilterHandler) Name() string {
+func (h *FilterHandler) Name() string {
 	return "transaction_filter_" + h.filter.Name()
 }
 
-// startTransactionFilterHandler starts the transaction filter handler
-func (h *TransactionFilterHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
+// startFilterHandler starts the transaction filter handler
+func (h *FilterHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
 
 	// Consume with callback (blocks until StopConsuming or error)
 	err := queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
@@ -43,7 +43,7 @@ func (h *TransactionFilterHandler) StartHandler(queueManager *middleware.QueueMa
 }
 
 // handleTransactionBatch handles a transaction batch - filter by year and route to output queues
-func (tfh *TransactionFilterHandler) Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
+func (tfh *FilterHandler) Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
 	wiring *common.NodeWiring, clientWG *sync.WaitGroup, msg amqp091.Delivery) error {
 
 	clientWG.Add(1)
@@ -83,7 +83,7 @@ func (tfh *TransactionFilterHandler) Handle(batchMessage *protocol.BatchMessage,
 }
 
 // filterRecords filters records using the configured filter
-func (tfh *TransactionFilterHandler) filterRecords(records []protocol.Record) []protocol.Record {
+func (tfh *FilterHandler) filterRecords(records []protocol.Record) []protocol.Record {
 	var filteredRecords []protocol.Record
 
 	for _, record := range records {

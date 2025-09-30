@@ -156,42 +156,6 @@ type OutputRoute struct {
 	RoutingKey string
 }
 
-const (
-	// Exchanges
-
-	// Filer by year
-	InputExchangeYear        = "transactions_and_transaction_items_exchange"
-	TransactionsExchange     = "transactions_exchange"
-	TransactionItemsExchange = "transaction_items_exchange"
-
-	// Filter by hour
-	InputExchangeHour                = TransactionsExchange
-	TransactionsFilteredHourExchange = "transactions_filtered_hour_exchange"
-
-	// Filter by amount
-	InputExchangeAmount = TransactionsFilteredHourExchange
-	RepliesExchange     = "replies_exchange" // finish Q1
-
-	// Q2
-	InputQ2Exchange      = TransactionItemsExchange
-	Q2GroupedExchange    = "q2_grouped_exchange"
-	Q2AggregatedExchange = "q2_aggregated_exchange"
-	Q2JoinExchange       = "q2_joined_exchange"
-
-	// Q3
-	InputQ3Exchange      = TransactionsFilteredHourExchange
-	Q3GroupedExchange    = "q3_grouped_exchange"
-	Q3AggregatedExchange = "q3_aggregated_exchange"
-	Q3JoinExchange       = "q3_joined_exchange"
-
-	// Q4
-	InputQ4Exchange      = TransactionsExchange
-	Q4GroupedExchange    = "q4_grouped_exchange"
-	Q4AggregatedExchange = "q4_aggregated_exchange"
-	Q4JoinUsersExchange  = "q4_joined_users_exchange"
-	Q4JoinStoresExchange = "q4_joined_stores_exchange"
-)
-
 type NodeWiring struct {
 	Role         NodeRole
 	NodeID       string

@@ -66,7 +66,7 @@ func (qm *QueueManager) Connect() error {
 	}
 
 	// queue by role+id
-	q, err := qm.channel.QueueDeclare(qm.Wiring.QueueName, true, false, false, false, nil)
+	q, err := qm.channel.QueueDeclare(qm.Wiring.QueueName, false, false, false, false, nil)
 	if err != nil {
 		_ = qm.channel.Close()
 		_ = qm.Connection.Close()

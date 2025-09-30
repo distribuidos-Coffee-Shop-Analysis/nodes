@@ -89,11 +89,20 @@ func (c *Config) GetRabbitmqConfig() *RabbitmqConfig {
 
 // GetNodeConfig returns the node configuration
 func (c *Config) GetNodeConfig() *NodeConfig {
-	section := c.cfg.Section("DEFAULT")
+
+	nodeID := os.Getenv("NODE_ID")
+	if nodeID == "" {
+		log.Fatalf("action: config_load | result: fail | error: NODE_ID environment variable is required")
+	}
+
+	nodeRole := os.Getenv("NODE_ROLE")
+	if nodeRole == "" {
+		log.Fatalf("action: config_load | result: fail | error: NODE_ROLE environment variable is required")
+	}
 
 	return &NodeConfig{
-		NodeID: section.Key("NODE_ID").MustString("default-01"),
-		Role:   NodeRole(section.Key("NODE_ROLE").MustString("filter_year")),
+		NodeID: nodeID,
+		Role:   NodeRole(nodeRole),
 	}
 }
 
@@ -157,18 +166,18 @@ type OutputRoute struct {
 }
 
 type NodeWiring struct {
-	Role           NodeRole
-	NodeID         string
-	QueueName      string                               // se calcula role.nodeID
-	Bindings       []Binding                            // de dónde leo
-	Outputs        map[protocol.DatasetType]OutputRoute // a dónde publico por dataset
-	DeclareExchs   []string                             // exchanges a declarar
+	Role         NodeRole
+	NodeID       string
+	QueueName    string                               // se calcula role.nodeID
+	Bindings     []Binding                            // de dónde leo
+	Outputs      map[protocol.DatasetType]OutputRoute // a dónde publico por dataset
+	DeclareExchs []string                             // exchanges a declarar
 }
 
 // JSON configuration for node wiring
 type WiringConfig struct {
 	Role             string                 `json:"role"`
-	InputQueueName       string              `json:"input_queue_name"`
+	InputQueueName   string                 `json:"input_queue_name"`
 	Bindings         []Binding              `json:"bindings"`
 	Outputs          map[string]OutputRoute `json:"outputs"`
 	DeclareExchanges []string               `json:"declare_exchanges"`

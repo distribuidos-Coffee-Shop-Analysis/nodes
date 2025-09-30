@@ -6,6 +6,7 @@ import (
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/filters"
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/groupbys"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/handlers"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 	"github.com/rabbitmq/amqp091-go"
@@ -38,9 +39,8 @@ func NewHandler(role common.NodeRole) Handler {
 		filter := filters.NewAmountFilter(75)
 		return handlers.NewTransactionFilterHandler(filter)
 	case common.RoleGroupByQ4:
-		//groupby := handlers.NewQuarterFilter(4)
-		//return handlers.NewTransactionFilterHandler(groupby)
-		return nil
+		groupby := groupbys.NewQ4GroupBy()
+		return handlers.NewGroupByHandler(groupby)
 	default:
 		panic("unknown role for handler")
 	}

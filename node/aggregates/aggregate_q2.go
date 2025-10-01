@@ -164,6 +164,18 @@ func (a *Q2Aggregate) GetAccumulatedBatchCount() int {
 	return int(a.batchesReceived.Load()) // No lock needed for atomic read
 }
 
+// IsComplete checks if all expected batches have been received
+func (a *Q2Aggregate) IsComplete(maxBatchIndex int) bool {
+	expectedBatches := maxBatchIndex // batch indices are 1-based
+	received := int(a.batchesReceived.Load())
+	isComplete := received == expectedBatches
+
+	log.Printf("action: q2_aggregate_is_complete | received: %d | expected: %d | complete: %v",
+		received, expectedBatches, isComplete)
+
+	return isComplete
+}
+
 // parseAggregateKey splits the composite key "yearMonth|itemID" into parts
 func parseAggregateKey(key string) []string {
 	parts := make([]string, 2)

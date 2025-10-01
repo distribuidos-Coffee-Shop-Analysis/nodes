@@ -263,8 +263,7 @@ func parseQ2DualDataset(parts []string, datasetType DatasetType) ([]Record, erro
 		currentIdx = endIdx
 	}
 
-	log.Printf("action: parse_q2_dual_complete | total_records: %d | group1: %d | group2: %d",
-		len(allRecords), count1, count2)
+	log.Printf("action: parse_q2_complete | total_records: %d", len(allRecords))
 
 	return allRecords, nil
 }

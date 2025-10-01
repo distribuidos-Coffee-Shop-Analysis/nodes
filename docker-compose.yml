@@ -220,6 +220,32 @@ services:
     - coffee_net
     volumes:
     - ./config/q2_aggregate.json:/app/config/q2_aggregate.json:ro
+  aggregate-node-q3-01:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q3_aggregate
+    - NODE_ID=01
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q3_aggregate.json:/app/config/q3_aggregate.json:ro
+  aggregate-node-q4-01:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_aggregate
+    - NODE_ID=01
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_aggregate.json:/app/config/q4_aggregate.json:ro
   joiner-node-q2-01:
     build: .
     environment:

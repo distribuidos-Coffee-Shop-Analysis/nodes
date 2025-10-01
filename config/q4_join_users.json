@@ -4,6 +4,10 @@
     {
       "exchange": "q4_aggregated_exchange",
       "routing_key": ""
+    },
+    {
+      "exchange": "users_exchange",
+      "routing_key": ""
     }
   ],
   "outputs": {
@@ -14,6 +18,7 @@
   },
   "declare_exchanges": [
     "q4_aggregated_exchange",
+    "users_exchange",
     "q4_joined_users_exchange"
   ]
 }

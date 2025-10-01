@@ -58,7 +58,7 @@ func (j *Q2Joiner) PerformJoin(aggregatedRecords []protocol.Record) ([]protocol.
 
 	for _, record := range aggregatedRecords {
 		switch aggRecord := record.(type) {
-		case *protocol.Q2GroupWithQuantityRecord:
+		case *protocol.Q2BestSellingRecord:
 			// Join best selling data with menu item names
 			menuItem, exists := j.menuItems[aggRecord.ItemID]
 			if !exists {
@@ -76,7 +76,7 @@ func (j *Q2Joiner) PerformJoin(aggregatedRecords []protocol.Record) ([]protocol.
 			log.Printf("action: q2_join_best_selling | item_id: %s | item_name: %s | qty: %s",
 				aggRecord.ItemID, menuItem.ItemName, aggRecord.SellingsQty)
 
-		case *protocol.Q2GroupWithSubtotalRecord:
+		case *protocol.Q2MostProfitsRecord:
 			// Join most profitable data with menu item names
 			menuItem, exists := j.menuItems[aggRecord.ItemID]
 			if !exists {

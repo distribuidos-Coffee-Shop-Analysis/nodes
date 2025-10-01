@@ -92,7 +92,7 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	}
 
 	// Check if we should finalize
-	shouldFinalize := h.numberOfBatchesRemaining == 0 && batchMessage.EOF && h.oneTimeFinalize
+	shouldFinalize := h.numberOfBatchesRemaining == 0 && h.eofReceived && h.oneTimeFinalize
 
 	if shouldFinalize {
 		h.oneTimeFinalize = false // Ensure "h.aggregate.finalize()" runs only once

@@ -8,12 +8,12 @@
   ],
   "outputs": {
     "Q4AggWithUserAndStore": {
-      "exchange": "q4_joined_stores_exchange",
+      "exchange": "replies_exchange",
       "routing_key": ""
     }
   },
   "declare_exchanges": [
     "q4_joined_users_exchange",
-    "q4_joined_stores_exchange"
+    "replies_exchange"
   ]
 }

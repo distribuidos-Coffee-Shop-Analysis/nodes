@@ -45,10 +45,6 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 	clientWG.Add(1)
 	defer clientWG.Done()
 
-	log.Printf("action: groupby_batch_received | groupby: %s | result: success | "+
-		"dataset_type: %s | record_count: %d | eof: %t",
-		h.groupby.Name(), batchMessage.DatasetType, len(batchMessage.Records), batchMessage.EOF)
-
 	groupedRecords, err := h.groupby.ProcessBatch(batchMessage.Records, batchMessage.EOF)
 	if err != nil {
 		log.Printf("action: groupby_process | groupby: %s | result: fail | error: %v", h.groupby.Name(), err)
@@ -100,10 +96,6 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 	}
 
 	publisher.Close()
-
-	log.Printf("action: groupby_publish | groupby: %s | result: success | "+
-		"batch_index: %d | record_count: %d | eof: %t",
-		h.groupby.Name(), batchIndex, len(groupedRecords), batchMessage.EOF)
 
 	msg.Ack(false) // Acknowledge msg
 

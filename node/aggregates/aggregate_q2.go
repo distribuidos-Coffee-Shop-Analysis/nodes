@@ -46,9 +46,6 @@ func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 	// Mark this batch as received
 	a.receivedBatches[batchIndex] = true
 
-	log.Printf("action: q2_aggregate_batch | batch_index: %d | record_count: %d",
-		batchIndex, len(records))
-
 	for _, record := range records {
 		switch r := record.(type) {
 		case *protocol.Q2GroupWithQuantityRecord:
@@ -64,10 +61,6 @@ func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 
 			a.quantityData[key] += quantity
 
-			log.Printf("action: q2_aggregate_quantity | year_month: %s | item_id: %s | "+
-				"batch_quantity: %d | accumulated_quantity: %d",
-				r.YearMonth, r.ItemID, quantity, a.quantityData[key])
-
 		case *protocol.Q2GroupWithSubtotalRecord:
 			// Accumulate profit data
 			key := fmt.Sprintf("%s|%s", r.YearMonth, r.ItemID)
@@ -80,10 +73,6 @@ func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 			}
 
 			a.profitData[key] += profit
-
-			log.Printf("action: q2_aggregate_profit | year_month: %s | item_id: %s | "+
-				"batch_profit: %.2f | accumulated_profit: %.2f",
-				r.YearMonth, r.ItemID, profit, a.profitData[key])
 
 		default:
 			log.Printf("action: q2_aggregate_unknown_record | result: warning | "+
@@ -140,9 +129,6 @@ func (a *Q2Aggregate) Finalize() ([]protocol.Record, error) {
 				SellingsQty: strconv.Itoa(bestQuantity),
 			}
 			result = append(result, record)
-
-			log.Printf("action: q2_aggregate_best_selling | year_month: %s | "+
-				"item_id: %s | sellings_qty: %d", yearMonth, bestItem, bestQuantity)
 		}
 	}
 
@@ -156,9 +142,6 @@ func (a *Q2Aggregate) Finalize() ([]protocol.Record, error) {
 				ProfitSum: fmt.Sprintf("%.2f", bestProfit),
 			}
 			result = append(result, record)
-
-			log.Printf("action: q2_aggregate_most_profitable | year_month: %s | "+
-				"item_id: %s | profit_sum: %.2f", yearMonth, bestItem, bestProfit)
 		}
 	}
 
@@ -177,12 +160,32 @@ func (a *Q2Aggregate) IsComplete(maxBatchIndex int) bool {
 	}
 
 	// Check if all batches from 0 to maxBatchIndex have been received
+	var missingBatches []int
 	for i := 0; i <= maxBatchIndex; i++ {
 		if !a.receivedBatches[i] {
-			return false
+			missingBatches = append(missingBatches, i)
+			// Limit logging to avoid spam for large numbers
+			if len(missingBatches) <= 10 {
+				log.Printf("action: q2_aggregate_missing_batch | batch_index: %d", i)
+			}
 		}
 	}
 
+	if len(missingBatches) > 0 {
+		log.Printf("action: q2_aggregate_incomplete | missing_batches: %d | total_expected: %d | received: %d",
+			len(missingBatches), maxBatchIndex+1, len(a.receivedBatches))
+
+		// For debugging: show some missing batch ranges
+		if len(missingBatches) <= 20 {
+			log.Printf("action: q2_aggregate_missing_batch_list | batches: %v", missingBatches)
+		} else {
+			log.Printf("action: q2_aggregate_missing_batch_sample | first_10: %v", missingBatches[:10])
+		}
+
+		return false
+	}
+
+	log.Printf("action: q2_aggregate_complete | all_batches_received | total: %d", maxBatchIndex+1)
 	return true
 }
 

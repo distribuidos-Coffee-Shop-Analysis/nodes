@@ -49,10 +49,6 @@ func (tfh *FilterHandler) Handle(batchMessage *protocol.BatchMessage, connection
 	clientWG.Add(1)
 	defer clientWG.Done()
 
-	log.Printf("action: transaction_batch_received | result: success | "+
-		"dataset_type: %s | record_count: %d | eof: %t",
-		batchMessage.DatasetType, len(batchMessage.Records), batchMessage.EOF)
-
 	// Filter records using the configured filter
 	filteredRecords := tfh.filterRecords(batchMessage.Records)
 

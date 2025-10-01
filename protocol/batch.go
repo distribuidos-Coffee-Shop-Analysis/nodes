@@ -121,8 +121,6 @@ func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 	content := string(data[2:])
 	parts := strings.Split(content, "|")
 
-	log.Printf("action: parse_batch_message | dataset_type: %d | content: %s", datasetType, content)
-
 	if len(parts) < 3 {
 		return nil, fmt.Errorf("invalid batch message format: missing BatchIndex, EOF or RecordCount")
 	}
@@ -160,9 +158,6 @@ func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 		return nil, err
 	}
 
-	log.Printf("action: parse_batch_message | batch_index: %d | eof: %t | record_count: %d | fields_per_record: %d",
-		batchIndex, eof, recordCount, fieldsPerRecord)
-
 	dataParts := parts[3:] // Skip BatchIndex, EOF and RecordCount
 
 	records := make([]Record, 0, recordCount)
@@ -173,8 +168,6 @@ func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 		if endIdx <= len(dataParts) {
 			recordFields := dataParts[startIdx:endIdx]
 
-			log.Printf("action: reconstruct_record | index: %d | fields: %v", i, recordFields)
-
 			record, err := recordClass(recordFields)
 			if err != nil {
 				log.Printf("action: create_record | index: %d | error: %v", i, err)
@@ -182,9 +175,11 @@ func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 			}
 
 			records = append(records, record)
-			log.Printf("action: create_record | index: %d | success: true", i)
 		}
 	}
+
+	log.Printf("action: parse_batch_message | result: success | batch_index: %d | eof: %t | record_count: %d | fields_per_record: %d",
+		batchIndex, eof, recordCount, fieldsPerRecord)
 
 	return &BatchMessage{
 		Type:        MessageTypeBatch,
@@ -221,9 +216,6 @@ func parseQ2DualDataset(parts []string, datasetType DatasetType) ([]Record, erro
 		return nil, fmt.Errorf("invalid group1 count: %v", err)
 	}
 
-	log.Printf("action: parse_q2_dual | dataset_type: %d | group1_count: %d | group1_fields: %d",
-		datasetType, count1, fields1)
-
 	var allRecords []Record
 	currentIdx := 1
 
@@ -253,9 +245,6 @@ func parseQ2DualDataset(parts []string, datasetType DatasetType) ([]Record, erro
 		return nil, fmt.Errorf("invalid group2 count: %v", err)
 	}
 	currentIdx++
-
-	log.Printf("action: parse_q2_dual | dataset_type: %d | group2_count: %d | group2_fields: %d",
-		datasetType, count2, fields2)
 
 	// Parse group 2 records
 	for i := 0; i < count2; i++ {

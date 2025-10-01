@@ -71,11 +71,6 @@ func (g *Q2GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 		// Accumulate quantity (count) and subtotal (sum)
 		groupQuantity[key]++
 		groupSubtotal[key] += subtotal
-
-		log.Printf("action: groupby_q2_accumulate | transaction_id: %s | "+
-			"year_month: %s | item_id: %s | quantity: %d | subtotal: %.2f | accumulated_subtotal: %.2f",
-			transactionItemRecord.TransactionID, yearMonth, transactionItemRecord.ItemID,
-			groupQuantity[key], subtotal, groupSubtotal[key])
 	}
 
 	// Convert grouped data to Q2 records
@@ -103,10 +98,6 @@ func (g *Q2GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 				ProfitSum: fmt.Sprintf("%.2f", subtotalSum),
 			}
 			subtotalRecords = append(subtotalRecords, subtotalRecord)
-
-			log.Printf("action: groupby_q2_emit | year_month: %s | item_id: %s | "+
-				"quantity: %d | profit_sum: %.2f",
-				yearMonth, itemID, quantity, subtotalSum)
 		}
 	}
 

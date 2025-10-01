@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"fmt"
-	"log"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
@@ -32,12 +31,10 @@ func (p *Publisher) SendToDatasetOutputExchanges(b *protocol.BatchMessage) error
 	if !ok {
 		return fmt.Errorf("no output route for dataset %v in role %s", b.DatasetType, p.wiring.Role)
 	}
-	log.Printf("action: sending_to_dataset_output | dataset_type: %v | exchange: %s | routing_key: %s", b.DatasetType, route.Exchange, route.RoutingKey)
 	return p.publish(route.Exchange, route.RoutingKey, common.EncodeToByteArray(b))
 }
 
 func (p *Publisher) publish(exchange, rk string, body []byte) error {
-	log.Printf("action: publishing_message | exchange: %s | routing_key: %s | body_size: %d", exchange, rk, len(body))
 	return p.channel.Publish(exchange, rk, false, false, amqp.Publishing{
 		DeliveryMode: amqp.Persistent,
 		Body:         body,

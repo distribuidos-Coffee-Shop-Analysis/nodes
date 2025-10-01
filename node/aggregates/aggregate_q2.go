@@ -159,9 +159,10 @@ func (a *Q2Aggregate) IsComplete(maxBatchIndex int) bool {
 		return false
 	}
 
-	// Check if all batches from 0 to maxBatchIndex have been received
+	// Check if all batches from 1 to maxBatchIndex have been received
+	// Note: Batch indexes start at 1, not 0
 	var missingBatches []int
-	for i := 0; i <= maxBatchIndex; i++ {
+	for i := 1; i <= maxBatchIndex; i++ {
 		if !a.receivedBatches[i] {
 			missingBatches = append(missingBatches, i)
 			// Limit logging to avoid spam for large numbers
@@ -173,7 +174,7 @@ func (a *Q2Aggregate) IsComplete(maxBatchIndex int) bool {
 
 	if len(missingBatches) > 0 {
 		log.Printf("action: q2_aggregate_incomplete | missing_batches: %d | total_expected: %d | received: %d",
-			len(missingBatches), maxBatchIndex+1, len(a.receivedBatches))
+			len(missingBatches), maxBatchIndex, len(a.receivedBatches))
 
 		// For debugging: show some missing batch ranges
 		if len(missingBatches) <= 20 {
@@ -185,7 +186,7 @@ func (a *Q2Aggregate) IsComplete(maxBatchIndex int) bool {
 		return false
 	}
 
-	log.Printf("action: q2_aggregate_complete | all_batches_received | total: %d", maxBatchIndex+1)
+	log.Printf("action: q2_aggregate_complete | all_batches_received | total: %d", maxBatchIndex)
 	return true
 }
 

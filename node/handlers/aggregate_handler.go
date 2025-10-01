@@ -71,7 +71,7 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	}
 
 	// Check if we should finalize based on batch completeness
-	var shouldFinalize bool
+	shouldFinalize := false
 	if batchMessage.EOF {
 		// Check if we have received all expected batches
 		isComplete := h.aggregate.IsComplete(batchMessage.BatchIndex)
@@ -80,23 +80,23 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 			shouldFinalize = true
 			log.Printf("action: aggregate_finalize_complete | aggregate: %s | max_batch_index: %d",
 				h.aggregate.Name(), batchMessage.BatchIndex)
-		} else {
-			// We received EOF but not all batches - this is a problem in the upstream
-			log.Printf("action: aggregate_incomplete_on_eof | aggregate: %s | max_batch_index: %d | missing_batches_detected",
-				h.aggregate.Name(), batchMessage.BatchIndex)
+		} 
 
-			// Strategy: Wait for a short time to see if missing batches arrive
-			// If they don't, finalize anyway to avoid hanging the pipeline
-			// TODO: Implement proper timeout mechanism in future
-			shouldFinalize = true
-			log.Printf("action: aggregate_finalize_forced | aggregate: %s | reason: eof_received_with_missing_batches",
-				h.aggregate.Name())
-		}
+		// else {
+		// 	// We received EOF but not all batches - this is a problem in the upstream
+		// 	log.Printf("action: aggregate_incomplete_on_eof | aggregate: %s | max_batch_index: %d | missing_batches_detected",
+		// 		h.aggregate.Name(), batchMessage.BatchIndex)
+
+		// 	// Strategy: Wait for a short time to see if missing batches arrive
+		// 	// If they don't, finalize anyway to avoid hanging the pipeline
+		// 	// TODO: Implement proper timeout mechanism in future
+		// 	shouldFinalize = true
+		// 	log.Printf("action: aggregate_finalize_forced | aggregate: %s | reason: eof_received_with_missing_batches",
+		// 		h.aggregate.Name())
+		// }
 	}
 
 	if shouldFinalize {
-		log.Printf("action: aggregate_finalize | aggregate: %s | result: start", h.aggregate.Name())
-
 		// Finalize aggregation and get results
 		finalResults, err := h.aggregate.Finalize()
 		if err != nil {

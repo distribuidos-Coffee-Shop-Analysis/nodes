@@ -18,6 +18,7 @@
   },
   "declare_exchanges": [
     "q2_aggregated_exchange",
+    "menu_items_exchange",
     "replies_exchange"
   ]
 }

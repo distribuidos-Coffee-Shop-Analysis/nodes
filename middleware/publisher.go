@@ -10,29 +10,29 @@ import (
 )
 
 type Publisher struct {
-	channel    *amqp.Channel
-	wiring *common.NodeWiring
+	channel *amqp.Channel
+	wiring  *common.NodeWiring
 }
 
 func NewPublisher(connection *amqp.Connection, wiring *common.NodeWiring) (*Publisher, error) {
-	
+
 	ch, err := connection.Channel()
 	if err != nil {
 		return nil, err
 	}
 
 	return &Publisher{
-		channel:    ch,
-		wiring: wiring,
+		channel: ch,
+		wiring:  wiring,
 	}, nil
 }
-
 
 func (p *Publisher) SendToDatasetOutputExchanges(b *protocol.BatchMessage) error {
 	route, ok := p.wiring.Outputs[b.DatasetType]
 	if !ok {
 		return fmt.Errorf("no output route for dataset %v in role %s", b.DatasetType, p.wiring.Role)
 	}
+	log.Printf("action: sending_to_dataset_output | dataset_type: %v | exchange: %s | routing_key: %s", b.DatasetType, route.Exchange, route.RoutingKey)
 	return p.publish(route.Exchange, route.RoutingKey, common.EncodeToByteArray(b))
 }
 

@@ -11,6 +11,8 @@ services:
     - NODE_ID=01
     networks:
     - coffee_net
+    volumes:
+    - ./config/filter_year.json:/app/config/filter_year.json:ro
   filter-node-year-02:
     build: .
     environment:
@@ -22,6 +24,8 @@ services:
     - NODE_ID=02
     networks:
     - coffee_net
+    volumes:
+    - ./config/filter_year.json:/app/config/filter_year.json:ro
   filter-node-year-03:
     build: .
     environment:
@@ -33,6 +37,8 @@ services:
     - NODE_ID=03
     networks:
     - coffee_net
+    volumes:
+    - ./config/filter_year.json:/app/config/filter_year.json:ro
   filter-node-hour-01:
     build: .
     environment:
@@ -44,6 +50,8 @@ services:
     - NODE_ID=01
     networks:
     - coffee_net
+    volumes:
+    - ./config/filter_hour.json:/app/config/filter_hour.json:ro
   filter-node-hour-02:
     build: .
     environment:
@@ -55,6 +63,8 @@ services:
     - NODE_ID=02
     networks:
     - coffee_net
+    volumes:
+    - ./config/filter_hour.json:/app/config/filter_hour.json:ro
   filter-node-hour-03:
     build: .
     environment:
@@ -66,6 +76,47 @@ services:
     - NODE_ID=03
     networks:
     - coffee_net
+    volumes:
+    - ./config/filter_hour.json:/app/config/filter_hour.json:ro
+  group-by-node-q4-01:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_group
+    - NODE_ID=01
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_group.json:/app/config/q4_group.json:ro
+  group-by-node-q4-02:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_group
+    - NODE_ID=02
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_group.json:/app/config/q4_group.json:ro
+  group-by-node-q4-03:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_group
+    - NODE_ID=03
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_group.json:/app/config/q4_group.json:ro
 networks:
   coffee_net:
     external: true

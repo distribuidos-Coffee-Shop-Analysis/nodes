@@ -58,7 +58,7 @@ func (qm *QueueManager) Connect() error {
 	// exchanges
 	for _, ex := range qm.Wiring.DeclareExchs {
 		kind := "direct"
-		if err := qm.channel.ExchangeDeclare(ex, kind, true, false, false, false, nil); err != nil {
+		if err := qm.channel.ExchangeDeclare(ex, kind, false, false, false, false, nil); err != nil {
 			_ = qm.channel.Close()
 			_ = qm.Connection.Close()
 			return fmt.Errorf("declare exchange %s: %w", ex, err)

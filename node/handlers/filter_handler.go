@@ -90,12 +90,7 @@ func (tfh *FilterHandler) filterRecords(records []protocol.Record) []protocol.Re
 		// Use the configured filter to determine if record should be kept
 		if tfh.filter.Filter(record) {
 			filteredRecords = append(filteredRecords, record)
-			log.Printf("action: record_accepted | filter: %s | "+
-				"transaction_id: %s", tfh.filter.Name(), filters.ExtractTransactionID(record))
-		} else {
-			log.Printf("action: record_filtered | filter: %s | "+
-				"transaction_id: %s", tfh.filter.Name(), filters.ExtractTransactionID(record))
-		}
+		} 
 	}
 
 	return filteredRecords

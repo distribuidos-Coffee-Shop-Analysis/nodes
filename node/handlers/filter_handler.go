@@ -94,18 +94,14 @@ func (tfh *FilterHandler) Handle(batchMessage *protocol.BatchMessage, connection
 		return err
 	}
 
-	log.Print("action: node_publish | result: start, soy el nodo: "+wiring.Role)
-
 	if err := publisher.SendToDatasetOutputExchanges(&out); err != nil {
 		log.Printf("action: node_publish | result: fail | error: %v", err)
 		msg.Nack(false, true) // Reject and requeue
 		return err
 	}
 
-	log.Print("ANTES DEL ACK BREOO, soy el nodo: "+wiring.Role)
 	msg.Ack(false) // Acknowledge the message
 	publisher.Close() // Close channel after publishing
-	log.Print("POSTT CLOSE BREOO"+wiring.Role)
 
 	return nil
 }

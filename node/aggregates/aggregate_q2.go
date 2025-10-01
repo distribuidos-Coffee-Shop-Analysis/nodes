@@ -18,16 +18,18 @@ type Q2Aggregate struct {
 	quantityData map[string]int     // year_month|item_id -> total quantity
 	profitData   map[string]float64 // year_month|item_id -> total profit
 
-	// Track number of batches received
-	batchesReceived atomic.Int32 // Lock is not needed for atomic operations
+	// Track unique batch indices (Q2 has dual datasets but same batch index)
+	seenBatchIndices map[int]bool // track which batch indices we've seen
+	uniqueBatchCount atomic.Int32 // count of unique batch indices
 }
 
 // NewQ2Aggregate creates a new Q2 aggregate processor
 func NewQ2Aggregate() *Q2Aggregate {
 	return &Q2Aggregate{
-		quantityData:    make(map[string]int),
-		profitData:      make(map[string]float64),
-		batchesReceived: atomic.Int32{},
+		quantityData:     make(map[string]int),
+		profitData:       make(map[string]float64),
+		seenBatchIndices: make(map[int]bool),
+		uniqueBatchCount: atomic.Int32{},
 	}
 }
 
@@ -37,10 +39,10 @@ func (a *Q2Aggregate) Name() string {
 
 // AccumulateBatch processes and accumulates a batch of Q2 grouped records
 func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int) error {
-
-	// Increment batch counter FIRST (atomic, thread-safe without lock)
-	a.batchesReceived.Add(1)
-
+	// Only count as one batch per batchIndex (Q2 has dual datasets but same batchIndex)
+	// We'll track seen batch indices to avoid double counting
+	a.trackBatchIndex(batchIndex)
+	
 	// Process records locally without lock (no shared state access)
 	localQuantity := make(map[string]int)
 	localProfit := make(map[string]float64)
@@ -92,6 +94,19 @@ func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 	}
 
 	return nil
+}
+
+// trackBatchIndex tracks unique batch indices to avoid double counting in dual datasets
+func (a *Q2Aggregate) trackBatchIndex(batchIndex int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !a.seenBatchIndices[batchIndex] {
+		a.seenBatchIndices[batchIndex] = true
+		a.uniqueBatchCount.Add(1)
+		log.Printf("action: q2_new_batch_tracked | batch_index: %d | unique_count: %d",
+			batchIndex, int(a.uniqueBatchCount.Load()))
+	}
 }
 
 // Finalize calculates the best selling and most profitable items per year_month
@@ -159,15 +174,15 @@ func (a *Q2Aggregate) Finalize() ([]protocol.Record, error) {
 	return result, nil
 }
 
-// GetAccumulatedBatchCount returns the number of batches received so far
+// GetAccumulatedBatchCount returns the number of unique batches received so far
 func (a *Q2Aggregate) GetAccumulatedBatchCount() int {
-	return int(a.batchesReceived.Load()) // No lock needed for atomic read
+	return int(a.uniqueBatchCount.Load()) // No lock needed for atomic read
 }
 
 // IsComplete checks if all expected batches have been received
 func (a *Q2Aggregate) IsComplete(maxBatchIndex int) bool {
 	expectedBatches := maxBatchIndex // batch indices are 1-based
-	received := int(a.batchesReceived.Load())
+	received := int(a.uniqueBatchCount.Load())
 	isComplete := received == expectedBatches
 
 	log.Printf("action: q2_aggregate_is_complete | received: %d | expected: %d | complete: %v",

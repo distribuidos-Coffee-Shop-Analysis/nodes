@@ -50,6 +50,9 @@ func (h *AggregateHandler) StartHandler(queueManager *middleware.QueueManager, c
 func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
 	wiring *common.NodeWiring, clientWG *sync.WaitGroup, msg amqp091.Delivery) error {
 
+	// Acknowledge the message
+	msg.Ack(false)
+
 	clientWG.Add(1)
 	defer clientWG.Done()
 
@@ -134,9 +137,6 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	} else {
 		h.mu.Unlock()
 	}
-
-	// Acknowledge the message
-	msg.Ack(false)
 
 	return nil
 }

@@ -56,6 +56,35 @@ func NewQ2GroupByBatch(batchIndex int, records []Record, eof bool) *BatchMessage
 	}
 }
 
+// NewQ2AggregateBatch creates a batch message specifically for Q2 aggregated data with dual subdatasets
+func NewQ2AggregateBatch(batchIndex int, records []Record, eof bool) *BatchMessage {
+	return &BatchMessage{
+		Type:        MessageTypeBatch,
+		DatasetType: DatasetTypeQ2Agg, // Q2Agg for aggregate output
+		BatchIndex:  batchIndex,
+		Records:     records,
+		EOF:         eof,
+	}
+}
+
+// NewAggregateBatch creates a batch message for aggregated data
+func NewAggregateBatch(batchIndex int, records []Record, eof bool) *BatchMessage {
+	// Determine dataset type from the first record
+	var datasetType DatasetType = DatasetTypeQ4Agg // default
+
+	if len(records) > 0 {
+		datasetType = records[0].GetType()
+	}
+
+	return &BatchMessage{
+		Type:        MessageTypeBatch,
+		DatasetType: datasetType,
+		BatchIndex:  batchIndex,
+		Records:     records,
+		EOF:         eof,
+	}
+}
+
 // BatchMessageFromData parses batch message from custom protocol data
 func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 	if len(data) < 2 {

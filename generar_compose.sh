@@ -11,3 +11,5 @@ OUTPUT_FILE="$1"
 shift
 
 python3 scripts/generate_compose.py "$OUTPUT_FILE" "$@"
+
+# ./generar_compose.sh docker-compose.yml filter-node-year=2 filter-node-hour=2 filter-node-amount=2 group-by-node-q2=2 group-by-node-q3=2 group-by-node-q4=2 aggregate-node-q2=1

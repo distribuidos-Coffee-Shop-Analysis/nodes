@@ -35,6 +35,8 @@ func (a *Q3Aggregate) Name() string {
 
 // AccumulateBatch processes and accumulates a batch of Q3 grouped records
 func (a *Q3Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int) error {
+	// Increment batch counter FIRST (atomic, thread-safe without lock)
+	a.batchesReceived.Add(1)
 
 	log.Printf("action: q3_aggregate_batch | batch_index: %d | record_count: %d",
 		batchIndex, len(records))
@@ -85,9 +87,6 @@ func (a *Q3Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 			"batch_tpv: %.2f | accumulated_tpv: %.2f",
 			key, tpv, a.tpvData[key])
 	}
-
-	// Increment batch counter (atomic, thread-safe without lock)
-	a.batchesReceived.Add(1)
 
 	return nil
 }

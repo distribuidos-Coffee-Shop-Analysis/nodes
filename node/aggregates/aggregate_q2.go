@@ -38,6 +38,9 @@ func (a *Q2Aggregate) Name() string {
 // AccumulateBatch processes and accumulates a batch of Q2 grouped records
 func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int) error {
 
+	// Increment batch counter FIRST (atomic, thread-safe without lock)
+	a.batchesReceived.Add(1)
+
 	// Process records locally without lock (no shared state access)
 	localQuantity := make(map[string]int)
 	localProfit := make(map[string]float64)
@@ -76,7 +79,7 @@ func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 		}
 	}
 
-	// Only lock for the final merge into shared maps 
+	// Only lock for the final merge into shared maps
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -87,9 +90,6 @@ func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 	for key, profit := range localProfit {
 		a.profitData[key] += profit
 	}
-
-	// Increment batch counter (atomic, thread-safe without lock)
-	a.batchesReceived.Add(1)
 
 	return nil
 }

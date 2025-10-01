@@ -65,21 +65,30 @@ func (qm *QueueManager) Connect() error {
 		}
 	}
 
-	// queue by role+id
-	q, err := qm.channel.QueueDeclare(qm.Wiring.QueueName, false, false, false, false, nil)
-	if err != nil {
-		_ = qm.channel.Close()
-		_ = qm.Connection.Close()
-		return err
-	}
+	for i, b := range qm.Wiring.Bindings {
+		// Determine queue name: single binding uses base name, multiple bindings add suffix
+		queueName := qm.Wiring.QueueName
+		if len(qm.Wiring.Bindings) > 1 {
+			queueName = fmt.Sprintf("%s_%d", qm.Wiring.QueueName, i)
+		}
 
-	// binds
-	for _, b := range qm.Wiring.Bindings {
+		// Declare queue
+		q, err := qm.channel.QueueDeclare(queueName, false, false, false, false, nil)
+		if err != nil {
+			_ = qm.channel.Close()
+			_ = qm.Connection.Close()
+			return fmt.Errorf("declare queue %s: %w", queueName, err)
+		}
+
+		// Bind queue to exchange
 		if err := qm.channel.QueueBind(q.Name, b.RoutingKey, b.Exchange, false, nil); err != nil {
 			_ = qm.channel.Close()
 			_ = qm.Connection.Close()
-			return err
+			return fmt.Errorf("bind queue %s to exchange %s: %w", q.Name, b.Exchange, err)
 		}
+
+		log.Printf("action: queue_setup | queue: %s | exchange: %s | routing_key: %s | binding_index: %d",
+			queueName, b.Exchange, b.RoutingKey, i)
 	}
 
 	return nil
@@ -93,62 +102,87 @@ func (qm *QueueManager) Disconnect() {
 	log.Println("action: rabbitmq_disconnect | result: success")
 }
 
-// StartConsuming starts consuming from configured input queue and calls callback for each message
+// StartConsuming starts consuming from configured input queue(s) and calls callback for each message
+// For normal nodes: consumes from single queue
+// For joiner nodes: consumes from multiple queues (one per input dataset)
 func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessage, delivery amqp.Delivery)) error {
-	msgs, err := qm.channel.Consume(qm.Wiring.QueueName, "", false, false, false, false, nil)
-	if err != nil {
-		log.Printf("action: start_consuming | result: fail | error: %v", err)
-		return err
-	}
-
 	qm.consuming = true
-	log.Printf("action: start_consuming | result: success | queue: %s", qm.Wiring.QueueName)
 
-	// Process messages
-	for msg := range msgs {
-		if !qm.consuming {
-			break
+	// Start consuming from each queue
+	for i := range qm.Wiring.Bindings {
+		var err error
+	
+		dedicatedChannel := qm.channel
+		// Determine queue name: single binding uses base name, multiple bindings add suffix
+		queueName := qm.Wiring.QueueName
+		if len(qm.Wiring.Bindings) > 1 {
+			queueName = fmt.Sprintf("%s_%d", qm.Wiring.QueueName, i)
+			// Create a dedicated channel for this queue (joiner nodes)
+			dedicatedChannel, err = qm.Connection.Channel()
+			if err != nil {
+				log.Printf("action: create_channel | result: fail | queue: %s | error: %v", queueName, err)
+				return err
+			}
 		}
 
-		// Parse message outside goroutine
-		var batchMessage *protocol.BatchMessage
-		var err error
+		// Start consuming from this queue
+		msgs, err := dedicatedChannel.Consume(queueName, "", false, false, false, false, nil)
+		if err != nil {
+			log.Printf("action: start_consuming | result: fail | queue: %s | error: %v", queueName, err)
+			return err
+		}
 
-		// Check message type (first byte)
-		if len(msg.Body) > 0 {
-			msgType := msg.Body[0]
-			if msgType == protocol.MessageTypeBatch {
-				batchMessage, err = protocol.BatchMessageFromData(msg.Body)
-				if err != nil {
-					log.Printf("failed to parse batch message: %v", err)
-					msg.Nack(false, true) // Reject and requeue
+		log.Printf("action: start_consuming | result: success | queue: %s", queueName)
+
+		// Process messages from this queue in a separate goroutine
+		go func(qName string, msgChannel <-chan amqp.Delivery) {
+			for msg := range msgChannel {
+				if !qm.consuming {
+					break
+				}
+
+				// Parse message outside goroutine
+				var batchMessage *protocol.BatchMessage
+				var err error
+
+				// Check message type (first byte)
+				if len(msg.Body) > 0 {
+					msgType := msg.Body[0]
+					if msgType == protocol.MessageTypeBatch {
+						batchMessage, err = protocol.BatchMessageFromData(msg.Body)
+						if err != nil {
+							log.Printf("action: parse_batch | queue: %s | result: fail | error: %v", qName, err)
+							msg.Nack(false, true) // Reject and requeue
+							continue
+						}
+					} else {
+						log.Printf("action: parse_message | queue: %s | result: fail | error: unknown message type: %d", qName, msgType)
+						msg.Nack(false, true)
+						continue
+					}
+				} else {
+					log.Printf("action: parse_message | queue: %s | result: fail | error: empty message body", qName)
+					msg.Nack(false, true)
 					continue
 				}
-			} else {
-				log.Printf("unknown message type: %d", msgType)
-				msg.Nack(false, true)
-				continue
+
+				// Launch callback in goroutine with panic recovery
+				go func(batch *protocol.BatchMessage, delivery amqp.Delivery) {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("action: process_batch | result: fail | error: %v", r)
+							delivery.Nack(false, true) // Reject and requeue
+						}
+					}()
+
+					callback(batch, delivery)
+				}(batchMessage, msg)
 			}
-		} else {
-			log.Printf("empty message body")
-			msg.Nack(false, true)
-			continue
-		}
-
-		// Launch callback in goroutine with panic recovery
-		go func(batch *protocol.BatchMessage, delivery amqp.Delivery) {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("action: process_transaction | result: fail | error: %v", r)
-					delivery.Nack(false, true) // Reject and requeue
-				}
-			}()
-
-			callback(batch, delivery)
-		}(batchMessage, msg)
+		}(queueName, msgs)
 	}
 
-	return nil
+	// Keep the function running (blocking) - it will return when consuming stops
+	select {}
 }
 
 // StopConsuming stops consuming messages

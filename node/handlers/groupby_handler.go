@@ -28,7 +28,7 @@ func (h *GroupByHandler) Name() string {
 // StartHandler starts the groupby handler
 func (h *GroupByHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
 	err := queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
-		go h.Handle(batchMessage, queueManager.Connection,
+		h.Handle(batchMessage, queueManager.Connection,
 			queueManager.Wiring, clientWg, delivery)
 	})
 	if err != nil {

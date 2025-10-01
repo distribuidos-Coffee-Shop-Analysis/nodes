@@ -139,7 +139,7 @@ func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessag
 
 			// Call the callback with the parsed data
 			// and acknowledge the message if processed successfully
-			callback(batchMessage, msg)
+			go callback(batchMessage, msg)
 
 		}()
 	}

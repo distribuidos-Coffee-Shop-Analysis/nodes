@@ -31,7 +31,7 @@ func (h *FilterHandler) StartHandler(queueManager *middleware.QueueManager, clie
 	// Consume with callback (blocks until StopConsuming or error)
 	err := queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
 
-		go h.Handle(batchMessage, queueManager.Connection,
+		h.Handle(batchMessage, queueManager.Connection,
 			queueManager.Wiring, clientWg, delivery)
 
 	})

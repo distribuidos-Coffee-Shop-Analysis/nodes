@@ -41,6 +41,9 @@ func NewHandler(role common.NodeRole) Handler {
 	case common.RoleGroupByQ4:
 		groupby := groupbys.NewQ4GroupBy()
 		return handlers.NewGroupByHandler(groupby)
+	case common.RoleGroupByQ3:
+		groupby := groupbys.NewQ3GroupBy()
+		return handlers.NewGroupByHandler(groupby)
 	default:
 		panic("unknown role for handler")
 	}

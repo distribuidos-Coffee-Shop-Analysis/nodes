@@ -24,7 +24,7 @@ def role_from_type(node_type: str) -> str:
     mapping = {
         "filter-node-year": "filter_year",
         "filter-node-hour": "filter_hour",
-        "filter-node-tx-amount": "filter_amount",
+        "filter-node-amount": "filter_amount",
         "group-by-node-q2": "q2_group",
         "group-by-node-q3": "q3_group",
         "group-by-node-q4": "q4_group",
@@ -86,4 +86,4 @@ if __name__ == "__main__":
     type_counts = parse_pairs(sys.argv[2:])
     generate_compose(output_file, type_counts)
 
-# ./scripts/generate_compose.py docker-compose.yml filter-node-year=3 filter-node-hour=3 group-by-node-q4=3
+# ./generar_compose.sh docker-compose.yml filter-node-year=2 filter-node-hour=2 filter-node-amount=2 group-by-node-q4=2 group-by-node-q3=2 

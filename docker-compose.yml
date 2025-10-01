@@ -26,19 +26,6 @@ services:
     - coffee_net
     volumes:
     - ./config/filter_year.json:/app/config/filter_year.json:ro
-  filter-node-year-03:
-    build: .
-    environment:
-    - RABBITMQ_HOST=rabbitmq
-    - RABBITMQ_PORT=5672
-    - RABBITMQ_USER=admin
-    - RABBITMQ_PASSWORD=admin
-    - NODE_ROLE=filter_year
-    - NODE_ID=03
-    networks:
-    - coffee_net
-    volumes:
-    - ./config/filter_year.json:/app/config/filter_year.json:ro
   filter-node-hour-01:
     build: .
     environment:
@@ -65,19 +52,32 @@ services:
     - coffee_net
     volumes:
     - ./config/filter_hour.json:/app/config/filter_hour.json:ro
-  filter-node-hour-03:
+  filter-node-amount-01:
     build: .
     environment:
     - RABBITMQ_HOST=rabbitmq
     - RABBITMQ_PORT=5672
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
-    - NODE_ROLE=filter_hour
-    - NODE_ID=03
+    - NODE_ROLE=filter_amount
+    - NODE_ID=01
     networks:
     - coffee_net
     volumes:
-    - ./config/filter_hour.json:/app/config/filter_hour.json:ro
+    - ./config/filter_amount.json:/app/config/filter_amount.json:ro
+  filter-node-amount-02:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=filter_amount
+    - NODE_ID=02
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/filter_amount.json:/app/config/filter_amount.json:ro
   group-by-node-q4-01:
     build: .
     environment:
@@ -104,19 +104,32 @@ services:
     - coffee_net
     volumes:
     - ./config/q4_group.json:/app/config/q4_group.json:ro
-  group-by-node-q4-03:
+  group-by-node-q3-01:
     build: .
     environment:
     - RABBITMQ_HOST=rabbitmq
     - RABBITMQ_PORT=5672
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
-    - NODE_ROLE=q4_group
-    - NODE_ID=03
+    - NODE_ROLE=q3_group
+    - NODE_ID=01
     networks:
     - coffee_net
     volumes:
-    - ./config/q4_group.json:/app/config/q4_group.json:ro
+    - ./config/q3_group.json:/app/config/q3_group.json:ro
+  group-by-node-q3-02:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q3_group
+    - NODE_ID=02
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q3_group.json:/app/config/q3_group.json:ro
 networks:
   coffee_net:
     external: true

@@ -67,6 +67,28 @@ func NewQ2AggregateBatch(batchIndex int, records []Record, eof bool) *BatchMessa
 	}
 }
 
+// NewQ3GroupByBatch creates a batch message specifically for Q3 grouped data
+func NewQ3GroupByBatch(batchIndex int, records []Record, eof bool) *BatchMessage {
+	return &BatchMessage{
+		Type:        MessageTypeBatch,
+		DatasetType: DatasetTypeQ3Groups,
+		BatchIndex:  batchIndex,
+		Records:     records,
+		EOF:         eof,
+	}
+}
+
+// NewQ4GroupByBatch creates a batch message specifically for Q4 grouped data
+func NewQ4GroupByBatch(batchIndex int, records []Record, eof bool) *BatchMessage {
+	return &BatchMessage{
+		Type:        MessageTypeBatch,
+		DatasetType: DatasetTypeQ4Groups,
+		BatchIndex:  batchIndex,
+		Records:     records,
+		EOF:         eof,
+	}
+}
+
 // NewAggregateBatch creates a batch message for aggregated data
 func NewAggregateBatch(batchIndex int, records []Record, eof bool) *BatchMessage {
 	// Determine dataset type from the first record

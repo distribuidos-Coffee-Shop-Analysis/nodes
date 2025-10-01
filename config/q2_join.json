@@ -4,6 +4,10 @@
     {
       "exchange": "q2_aggregated_exchange",
       "routing_key": ""
+    },
+    {
+      "exchange": "menu_items_exchange",
+      "routing_key": ""
     }
   ],
   "outputs": {

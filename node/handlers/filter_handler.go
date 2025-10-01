@@ -90,7 +90,7 @@ func (tfh *FilterHandler) filterRecords(records []protocol.Record) []protocol.Re
 		// Use the configured filter to determine if record should be kept
 		if tfh.filter.Filter(record) {
 			filteredRecords = append(filteredRecords, record)
-		} 
+		}
 	}
 
 	return filteredRecords

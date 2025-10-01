@@ -61,9 +61,14 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 
 	// If this batch has EOF, mark it in the aggregate
 	if batchMessage.EOF {
-		// For Q2Aggregate, we need to call SetEOF
-		if q2Agg, ok := h.aggregate.(*aggregates.Q2Aggregate); ok {
-			q2Agg.SetEOF(batchMessage.BatchIndex)
+		// Call SetEOF for aggregates that support it
+		switch agg := h.aggregate.(type) {
+		case *aggregates.Q2Aggregate:
+			agg.SetEOF(batchMessage.BatchIndex)
+		case *aggregates.Q3Aggregate:
+			agg.SetEOF(batchMessage.BatchIndex)
+		case *aggregates.Q4Aggregate:
+			agg.SetEOF(batchMessage.BatchIndex)
 		}
 
 		log.Printf("action: aggregate_eof_received | aggregate: %s | max_batch_index: %d",

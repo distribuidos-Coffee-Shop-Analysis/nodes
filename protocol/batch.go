@@ -337,6 +337,10 @@ func getRecordClassAndFields(datasetType DatasetType) (RecordFactory, int, error
 		return func(parts []string) (Record, error) {
 			return NewQ3GroupedRecordFromParts(parts)
 		}, Q3GroupedRecordParts, nil
+	case DatasetTypeQ3Agg:
+		return func(parts []string) (Record, error) {
+			return NewQ3AggregatedRecordFromParts(parts)
+		}, Q3AggregatedRecordParts, nil
 	case DatasetTypeQ3AggWithName:
 		return func(parts []string) (Record, error) {
 			return NewQ3JoinedRecordFromParts(parts)

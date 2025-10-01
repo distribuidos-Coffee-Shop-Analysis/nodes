@@ -253,6 +253,37 @@ func NewQ3GroupedRecordFromParts(parts []string) (*Q3GroupedRecord, error) {
 	}, nil
 }
 
+// ===== Q3 Aggregated Records (output from Aggregate node) =====
+
+// Q3AggregatedRecord represents aggregated Q3 data: year_half_created_at, store_id, tpv
+type Q3AggregatedRecord struct {
+	YearHalf string
+	StoreID  string
+	TPV      string
+}
+
+const Q3AggregatedRecordParts = 3
+
+func (q *Q3AggregatedRecord) Serialize() string {
+	return fmt.Sprintf("%s|%s|%s", q.YearHalf, q.StoreID, q.TPV)
+}
+
+func (q *Q3AggregatedRecord) GetType() DatasetType {
+	return DatasetTypeQ3Agg
+}
+
+func NewQ3AggregatedRecordFromParts(parts []string) (*Q3AggregatedRecord, error) {
+	if len(parts) < Q3AggregatedRecordParts {
+		return nil, fmt.Errorf("invalid Q3AggregatedRecord format: expected %d fields, got %d",
+			Q3AggregatedRecordParts, len(parts))
+	}
+	return &Q3AggregatedRecord{
+		YearHalf: parts[0],
+		StoreID:  parts[1],
+		TPV:      parts[2],
+	}, nil
+}
+
 // ===== Q3 Joined Records (output from Join node) =====
 
 // Q3JoinedRecord represents Q3 joined data with store name: year_half_created_at, store_name, tpv

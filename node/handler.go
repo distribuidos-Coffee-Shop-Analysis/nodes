@@ -51,6 +51,12 @@ func NewHandler(role common.NodeRole) Handler {
 	case common.RoleAggregateQ2:
 		aggregate := aggregates.NewQ2Aggregate()
 		return handlers.NewAggregateHandler(aggregate)
+	case common.RoleAggregateQ3:
+		aggregate := aggregates.NewQ3Aggregate()
+		return handlers.NewAggregateHandler(aggregate)
+	case common.RoleAggregateQ4:
+		aggregate := aggregates.NewQ4Aggregate()
+		return handlers.NewAggregateHandler(aggregate)
 	default:
 		panic("unknown role for handler")
 	}

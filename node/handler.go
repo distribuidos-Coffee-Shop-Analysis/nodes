@@ -5,9 +5,11 @@ import (
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/aggregates"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/filters"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/groupbys"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/handlers"
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/joiners"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 	"github.com/rabbitmq/amqp091-go"
 )
@@ -55,6 +57,21 @@ func NewHandler(role common.NodeRole) Handler {
 	case common.RoleGroupByQ3:
 		groupby := groupbys.NewQ3GroupBy()
 		return handlers.NewGroupByHandler(groupby)
+	case common.RoleGroupByQ2:
+		groupby := groupbys.NewQ2GroupBy()
+		return handlers.NewGroupByHandler(groupby)
+	case common.RoleAggregateQ2:
+		aggregate := aggregates.NewQ2Aggregate()
+		return handlers.NewAggregateHandler(aggregate)
+	case common.RoleAggregateQ3:
+		aggregate := aggregates.NewQ3Aggregate()
+		return handlers.NewAggregateHandler(aggregate)
+	case common.RoleAggregateQ4:
+		aggregate := aggregates.NewQ4Aggregate()
+		return handlers.NewAggregateHandler(aggregate)
+	case common.RoleJoinerQ2:
+		joiner := joiners.NewQ2Joiner()
+		return handlers.NewJoinerHandler(joiner)
 	default:
 		panic("unknown role for handler")
 	}

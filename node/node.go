@@ -3,20 +3,21 @@ package node
 import (
 	"log"
 	"sync"
+
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
 )
 
 // Node represents a simple filter node that processes transactions from RabbitMQ queues
 type Node struct {
-	queueManager      *middleware.QueueManager
-	handler           Handler
-	clientWg   sync.WaitGroup // Track active goroutines
+	queueManager *middleware.QueueManager
+	handler      Handler
+	clientWg     sync.WaitGroup // Track active goroutines
 }
 
 func NewNode(handler Handler, queueManager *middleware.QueueManager) *Node {
 	fn := &Node{
-		queueManager:      queueManager,
-		handler:           handler,
+		queueManager: queueManager,
+		handler:      handler,
 	}
 
 	log.Printf("action: node_init | result: success |")
@@ -41,11 +42,8 @@ func (node *Node) Run() error {
 
 	log.Println("action: filter_node_started | result: success | msg: processing transactions...")
 
-	
 	return nil
 }
-
-
 
 // Shutdown gracefully shuts down the filter node
 func (n *Node) Shutdown() {
@@ -53,7 +51,7 @@ func (n *Node) Shutdown() {
 
 	if n.queueManager != nil {
 		n.queueManager.StopConsuming() // Stop consuming new messages
-		n.queueManager.Close() // Close connection to RabbitMQ
+		n.queueManager.Close()         // Close connection to RabbitMQ
 	}
 
 	// Wait for all client goroutines to finish
@@ -61,4 +59,3 @@ func (n *Node) Shutdown() {
 
 	log.Printf("action: node_shutdown | handler: %s | result: success", n.handler.Name())
 }
-

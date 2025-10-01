@@ -8,12 +8,12 @@
   ],
   "outputs": {
     "Q3AggWithName": {
-      "exchange": "q3_joined_exchange",
+      "exchange": "replies_exchange",
       "routing_key": ""
     }
   },
   "declare_exchanges": [
     "q3_aggregated_exchange",
-    "q3_joined_exchange"
+    "replies_exchange"
   ]
 }

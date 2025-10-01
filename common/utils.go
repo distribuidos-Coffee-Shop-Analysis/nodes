@@ -104,3 +104,4 @@ func separateQ2Records(records []protocol.Record, datasetType protocol.DatasetTy
 
 	return group1, group2
 }
+

@@ -45,10 +45,6 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 	clientWG.Add(1)
 	defer clientWG.Done()
 
-	log.Printf("action: groupby_batch_received | groupby: %s | result: success | "+
-		"dataset_type: %s | record_count: %d | eof: %t",
-		h.groupby.Name(), batchMessage.DatasetType, len(batchMessage.Records), batchMessage.EOF)
-
 	groupedRecords, err := h.groupby.ProcessBatch(batchMessage.Records, batchMessage.EOF)
 	if err != nil {
 		log.Printf("action: groupby_process | groupby: %s | result: fail | error: %v", h.groupby.Name(), err)
@@ -56,14 +52,35 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 		return err
 	}
 
-
 	batchIndex := batchMessage.BatchIndex
 
-	groupByBatch := protocol.NewGroupByBatch(
-		batchIndex,
-		groupedRecords,
-		batchMessage.EOF,
-	)
+	var groupByBatch *protocol.BatchMessage
+	switch h.groupby.Name() {
+	case "q2_groupby_year_month_item":
+		groupByBatch = protocol.NewQ2GroupByBatch(
+			batchIndex,
+			groupedRecords,
+			batchMessage.EOF,
+		)
+	case "q3_groupby_year_half_store":
+		groupByBatch = protocol.NewQ3GroupByBatch(
+			batchIndex,
+			groupedRecords,
+			batchMessage.EOF,
+		)
+	case "q4_groupby_store_user":
+		groupByBatch = protocol.NewQ4GroupByBatch(
+			batchIndex,
+			groupedRecords,
+			batchMessage.EOF,
+		)
+	default:
+		groupByBatch = protocol.NewGroupByBatch(
+			batchIndex,
+			groupedRecords,
+			batchMessage.EOF,
+		)
+	}
 
 	publisher, err := middleware.NewPublisher(connection, wiring)
 	if err != nil {
@@ -74,18 +91,13 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 
 	if err := publisher.SendToDatasetOutputExchanges(groupByBatch); err != nil {
 		log.Printf("action: groupby_publish | groupby: %s | result: fail | error: %v", h.groupby.Name(), err)
-		msg.Nack(false, true) 
+		msg.Nack(false, true)
 		return err
 	}
 
-	publisher.Close() 
-
-	log.Printf("action: groupby_publish | groupby: %s | result: success | "+
-		"batch_index: %d | record_count: %d | eof: %t", 
-		h.groupby.Name(), batchIndex, len(groupedRecords), batchMessage.EOF)
+	publisher.Close()
 
 	msg.Ack(false) // Acknowledge msg
 
-	
 	return nil
 }

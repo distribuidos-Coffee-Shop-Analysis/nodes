@@ -4,16 +4,20 @@
     {
       "exchange": "q2_aggregated_exchange",
       "routing_key": ""
+    },
+    {
+      "exchange": "menu_items_exchange",
+      "routing_key": ""
     }
   ],
   "outputs": {
     "Q2AggWithName": {
-      "exchange": "q2_joined_exchange",
+      "exchange": "replies_exchange",
       "routing_key": ""
     }
   },
   "declare_exchanges": [
     "q2_aggregated_exchange",
-    "q2_joined_exchange"
+    "replies_exchange"
   ]
 }

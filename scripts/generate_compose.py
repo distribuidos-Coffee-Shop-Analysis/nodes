@@ -45,7 +45,6 @@ def make_service_name(node_type: str, idx: int) -> str:
 
 def generate_compose(output_file, type_counts):
     compose = {
-        "version": "3.8",
         "services": {},
         "networks": {
             "coffee_net": {

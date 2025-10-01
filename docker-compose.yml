@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   filter-node-year-01:
     build: .
@@ -78,58 +77,6 @@ services:
     - coffee_net
     volumes:
     - ./config/filter_amount.json:/app/config/filter_amount.json:ro
-  group-by-node-q4-01:
-    build: .
-    environment:
-    - RABBITMQ_HOST=rabbitmq
-    - RABBITMQ_PORT=5672
-    - RABBITMQ_USER=admin
-    - RABBITMQ_PASSWORD=admin
-    - NODE_ROLE=q4_group
-    - NODE_ID=01
-    networks:
-    - coffee_net
-    volumes:
-    - ./config/q4_group.json:/app/config/q4_group.json:ro
-  group-by-node-q4-02:
-    build: .
-    environment:
-    - RABBITMQ_HOST=rabbitmq
-    - RABBITMQ_PORT=5672
-    - RABBITMQ_USER=admin
-    - RABBITMQ_PASSWORD=admin
-    - NODE_ROLE=q4_group
-    - NODE_ID=02
-    networks:
-    - coffee_net
-    volumes:
-    - ./config/q4_group.json:/app/config/q4_group.json:ro
-  group-by-node-q3-01:
-    build: .
-    environment:
-    - RABBITMQ_HOST=rabbitmq
-    - RABBITMQ_PORT=5672
-    - RABBITMQ_USER=admin
-    - RABBITMQ_PASSWORD=admin
-    - NODE_ROLE=q3_group
-    - NODE_ID=01
-    networks:
-    - coffee_net
-    volumes:
-    - ./config/q3_group.json:/app/config/q3_group.json:ro
-  group-by-node-q3-02:
-    build: .
-    environment:
-    - RABBITMQ_HOST=rabbitmq
-    - RABBITMQ_PORT=5672
-    - RABBITMQ_USER=admin
-    - RABBITMQ_PASSWORD=admin
-    - NODE_ROLE=q3_group
-    - NODE_ID=02
-    networks:
-    - coffee_net
-    volumes:
-    - ./config/q3_group.json:/app/config/q3_group.json:ro
 networks:
   coffee_net:
     external: true

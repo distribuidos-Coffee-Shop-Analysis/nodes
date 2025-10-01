@@ -36,8 +36,19 @@ func NewHandler(role common.NodeRole) Handler {
 		filter := filters.NewHourFilter(6, 23)
 		return handlers.NewFilterHandler(filter)
 	case common.RoleFilterAmount:
-		filter := filters.NewAmountFilter(75)
-		return handlers.NewFilterHandler(filter)
+		filter := filters.NewAmountFilter(1)
+		// Filter Amount also transforms Transaction to Q1
+		transformer := func(record protocol.Record) protocol.Record {
+			txn, ok := record.(*protocol.TransactionRecord)
+			if !ok {
+				return record // Pass through non-transaction records
+			}
+			return &protocol.Q1Record{
+				TransactionID: txn.TransactionID,
+				FinalAmount:   txn.FinalAmount,
+			}
+		}
+		return handlers.NewFilterHandlerWithTransform(filter, transformer, protocol.DatasetTypeQ1)
 	case common.RoleGroupByQ4:
 		groupby := groupbys.NewQ4GroupBy()
 		return handlers.NewGroupByHandler(groupby)

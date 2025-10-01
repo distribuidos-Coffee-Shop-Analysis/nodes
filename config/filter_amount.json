@@ -8,7 +8,7 @@
     }
   ],
   "outputs": {
-    "TRANSACTIONS": {
+    "Q1": {
       "exchange": "replies_exchange",
       "routing_key": ""
     }

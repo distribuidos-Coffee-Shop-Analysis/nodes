@@ -11,13 +11,27 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 )
 
+type RecordTransformer func(protocol.Record) protocol.Record
+
 type FilterHandler struct {
-	filter filters.RecordFilter
+	filter      filters.RecordFilter
+	transformer RecordTransformer    // Optional: transforms records after filtering
+	outputType  protocol.DatasetType // Optional: override output dataset type
 }
 
 func NewFilterHandler(filter filters.RecordFilter) *FilterHandler {
 	return &FilterHandler{
-		filter: filter,
+		filter:      filter,
+		transformer: nil,
+		outputType:  0, // 0 means use input type
+	}
+}
+
+func NewFilterHandlerWithTransform(filter filters.RecordFilter, transformer RecordTransformer, outputType protocol.DatasetType) *FilterHandler {
+	return &FilterHandler{
+		filter:      filter,
+		transformer: transformer,
+		outputType:  outputType,
 	}
 }
 
@@ -56,11 +70,26 @@ func (tfh *FilterHandler) Handle(batchMessage *protocol.BatchMessage, connection
 	// Filter records using the configured filter
 	filteredRecords := tfh.filterRecords(batchMessage.Records)
 
-	if len(filteredRecords) == 0 && !batchMessage.EOF {
-		return nil
+	// Transform records if transformer is provided
+	if tfh.transformer != nil {
+		transformedRecords := make([]protocol.Record, 0, len(filteredRecords))
+		for _, record := range filteredRecords {
+			transformedRecords = append(transformedRecords, tfh.transformer(record))
+		}
+		filteredRecords = transformedRecords
 	}
+
+	// if len(filteredRecords) == 0 && !batchMessage.EOF {
+	// 	return nil
+	// }
+
 	out := *batchMessage
 	out.Records = filteredRecords
+
+	// Override dataset type if specified
+	if tfh.outputType != 0 {
+		out.DatasetType = tfh.outputType
+	}
 
 	publisher, err := middleware.NewPublisher(connection, wiring)
 	if err != nil {
@@ -69,15 +98,18 @@ func (tfh *FilterHandler) Handle(batchMessage *protocol.BatchMessage, connection
 		return err
 	}
 
+	log.Print("action: node_publish | result: start, soy el nodo: "+wiring.Role)
+
 	if err := publisher.SendToDatasetOutputExchanges(&out); err != nil {
 		log.Printf("action: node_publish | result: fail | error: %v", err)
 		msg.Nack(false, true) // Reject and requeue
 		return err
 	}
 
-	publisher.Close() // Close channel after publishing
-
+	log.Print("ANTES DEL ACK BREOO, soy el nodo: "+wiring.Role)
 	msg.Ack(false) // Acknowledge the message
+	publisher.Close() // Close channel after publishing
+	log.Print("POSTT CLOSE BREOO"+wiring.Role)
 
 	return nil
 }
@@ -90,7 +122,7 @@ func (tfh *FilterHandler) filterRecords(records []protocol.Record) []protocol.Re
 		// Use the configured filter to determine if record should be kept
 		if tfh.filter.Filter(record) {
 			filteredRecords = append(filteredRecords, record)
-		} 
+		}
 	}
 
 	return filteredRecords

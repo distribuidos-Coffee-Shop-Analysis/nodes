@@ -110,38 +110,42 @@ func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessag
 			break
 		}
 
-		func() {
+		// Parse message outside goroutine
+		var batchMessage *protocol.BatchMessage
+		var err error
+
+		// Check message type (first byte)
+		if len(msg.Body) > 0 {
+			msgType := msg.Body[0]
+			if msgType == protocol.MessageTypeBatch {
+				batchMessage, err = protocol.BatchMessageFromData(msg.Body)
+				if err != nil {
+					log.Printf("failed to parse batch message: %v", err)
+					msg.Nack(false, true) // Reject and requeue
+					continue
+				}
+			} else {
+				log.Printf("unknown message type: %d", msgType)
+				msg.Nack(false, true)
+				continue
+			}
+		} else {
+			log.Printf("empty message body")
+			msg.Nack(false, true)
+			continue
+		}
+
+		// Launch callback in goroutine with panic recovery
+		go func(batch *protocol.BatchMessage, delivery amqp.Delivery) {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("action: process_transaction | result: fail | error: %v", r)
-					msg.Nack(false, true) // Reject and requeue
+					delivery.Nack(false, true) // Reject and requeue
 				}
 			}()
 
-			var batchMessage *protocol.BatchMessage
-			var err error
-
-			// Check message type (first byte)
-			if len(msg.Body) > 0 {
-				msgType := msg.Body[0]
-				if msgType == protocol.MessageTypeBatch {
-					batchMessage, err = protocol.BatchMessageFromData(msg.Body)
-					if err != nil {
-						log.Printf("failed to parse batch message: %v", err)
-						msg.Nack(false, true) // Reject and requeue
-					}
-				} else {
-					log.Printf("unknown message type: %d", msgType)
-				}
-			} else {
-				log.Printf("empty message body")
-			}
-
-			// Call the callback with the parsed data
-			// and acknowledge the message if processed successfully
-			go callback(batchMessage, msg)
-
-		}()
+			callback(batch, delivery)
+		}(batchMessage, msg)
 	}
 
 	return nil
@@ -152,7 +156,6 @@ func (qm *QueueManager) StopConsuming() {
 	qm.consuming = false
 	log.Println("action: stop_consuming | result: success")
 }
-
 
 // MessageMiddleware interface methods
 

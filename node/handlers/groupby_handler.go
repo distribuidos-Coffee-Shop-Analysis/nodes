@@ -56,14 +56,22 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 		return err
 	}
 
-
 	batchIndex := batchMessage.BatchIndex
 
-	groupByBatch := protocol.NewGroupByBatch(
-		batchIndex,
-		groupedRecords,
-		batchMessage.EOF,
-	)
+	var groupByBatch *protocol.BatchMessage
+	if h.groupby.Name() == "q2_groupby_year_month_item" {
+		groupByBatch = protocol.NewQ2GroupByBatch(
+			batchIndex,
+			groupedRecords,
+			batchMessage.EOF,
+		)
+	} else {
+		groupByBatch = protocol.NewGroupByBatch(
+			batchIndex,
+			groupedRecords,
+			batchMessage.EOF,
+		)
+	}
 
 	publisher, err := middleware.NewPublisher(connection, wiring)
 	if err != nil {
@@ -74,18 +82,17 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 
 	if err := publisher.SendToDatasetOutputExchanges(groupByBatch); err != nil {
 		log.Printf("action: groupby_publish | groupby: %s | result: fail | error: %v", h.groupby.Name(), err)
-		msg.Nack(false, true) 
+		msg.Nack(false, true)
 		return err
 	}
 
-	publisher.Close() 
+	publisher.Close()
 
 	log.Printf("action: groupby_publish | groupby: %s | result: success | "+
-		"batch_index: %d | record_count: %d | eof: %t", 
+		"batch_index: %d | record_count: %d | eof: %t",
 		h.groupby.Name(), batchIndex, len(groupedRecords), batchMessage.EOF)
 
 	msg.Ack(false) // Acknowledge msg
 
-	
 	return nil
 }

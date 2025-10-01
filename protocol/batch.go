@@ -45,6 +45,17 @@ func NewGroupByBatch(batchIndex int, records []Record, eof bool) *BatchMessage {
 	}
 }
 
+// NewQ2GroupByBatch creates a batch message specifically for Q2 grouped data with dual subdatasets
+func NewQ2GroupByBatch(batchIndex int, records []Record, eof bool) *BatchMessage {
+	return &BatchMessage{
+		Type:        MessageTypeBatch,
+		DatasetType: DatasetTypeQ2Groups,
+		BatchIndex:  batchIndex,
+		Records:     records,
+		EOF:         eof,
+	}
+}
+
 // BatchMessageFromData parses batch message from custom protocol data
 func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 	if len(data) < 2 {

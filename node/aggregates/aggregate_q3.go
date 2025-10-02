@@ -37,7 +37,7 @@ func (a *Q3Aggregate) Name() string {
 
 // AccumulateBatch processes and accumulates a batch of Q3 grouped records
 func (a *Q3Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int) error {
-	// Only count as one batch per batchIndex (Q2 has dual datasets but same batchIndex)
+	// Only count as one batch per batchIndex
 	// We'll track seen batch indices to avoid double counting
 	a.trackBatchIndex(batchIndex)
 
@@ -118,7 +118,7 @@ func (a *Q3Aggregate) Finalize() ([]protocol.Record, error) {
 
 // GetAccumulatedBatchCount returns the number of batches received so far
 func (a *Q3Aggregate) GetAccumulatedBatchCount() int {
-	return int(a.uniqueBatchCount.Load()) // No lock needed for atomic read
+	return int(a.uniqueBatchCount.Load())
 }
 
 func (a *Q3Aggregate) trackBatchIndex(batchIndex int) {

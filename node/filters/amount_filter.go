@@ -38,7 +38,7 @@ func (af *AmountFilter) Filter(record protocol.Record) bool {
 	}
 
 	amount := int64(amountFloat)
-	result := amount > int64(af.MinAmount)
+	result := amount >= int64(af.MinAmount)
 
 	return result
 }

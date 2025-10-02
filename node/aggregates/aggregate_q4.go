@@ -20,15 +20,17 @@ type Q4Aggregate struct {
 
 	// Map from store_id to map[user_id]transaction_count
 	storeUserCounts map[string]map[string]int
-	// Track number of batches received
-	batchesReceived atomic.Int32 // Lock is not needed for atomic operations
+	// Track unique batch indices
+	seenBatchIndices map[int]bool // track which batch indices we've seen
+	uniqueBatchCount atomic.Int32 // count of unique batch indices
 }
 
 // NewQ4Aggregate creates a new Q4Aggregate instance.
 func NewQ4Aggregate() *Q4Aggregate {
 	return &Q4Aggregate{
 		storeUserCounts: make(map[string]map[string]int),
-		batchesReceived: atomic.Int32{},
+		seenBatchIndices: make(map[int]bool),
+		uniqueBatchCount: atomic.Int32{},
 	}
 }
 
@@ -39,8 +41,9 @@ func (q *Q4Aggregate) Name() string {
 
 // AccumulateBatch processes a batch of Q4GroupedRecord.
 func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int) error {
-	log.Printf("action: q4_accumulate_batch | batch_index: %d | records: %d",
-		batchIndex, len(records))
+	// Only count as one batch per batchIndex
+	// We'll track seen batch indices to avoid double counting
+	q.trackBatchIndex(batchIndex)
 
 	// Process records locally without lock, then we merge into shared map
 	// Structure: store_id -> user_id -> transaction_count
@@ -80,21 +83,25 @@ func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 		// Merge user counts from local map to shared map
 		for userID, count := range userCounts {
 			q.storeUserCounts[storeID][userID] += count
-
-			log.Printf("action: q4_accumulate_customer | store: %s | user: %s | batch_transactions: %d | total_transactions: %d",
-				storeID, userID, count, q.storeUserCounts[storeID][userID])
 		}
 	}
-
-	// Increment batch counter (atomic, thread-safe without lock)
-	q.batchesReceived.Add(1)
 
 	return nil
 }
 
+func (a *Q4Aggregate) trackBatchIndex(batchIndex int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !a.seenBatchIndices[batchIndex] {
+		a.seenBatchIndices[batchIndex] = true
+		a.uniqueBatchCount.Add(1)
+	}
+}
+
 // GetAccumulatedBatchCount returns the number of batches received so far
 func (a *Q4Aggregate) GetAccumulatedBatchCount() int {
-	return int(a.batchesReceived.Load()) // No lock needed for atomic read
+	return int(a.uniqueBatchCount.Load())
 }
 
 // Finalize generates the top 3 customers per store.

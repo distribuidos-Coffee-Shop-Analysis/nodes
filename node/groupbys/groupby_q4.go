@@ -34,9 +34,6 @@ func (g *Q4GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 		}
 
 		if transactionRecord.StoreID == "" || transactionRecord.UserID == "" {
-			log.Printf("action: groupby_q4_filter_null | result: dropped | "+
-				"transaction_id: %s | store_id: %s | user_id: %s | reason: null_groupby_key",
-				transactionRecord.TransactionID, transactionRecord.StoreID, transactionRecord.UserID)
 			continue
 		}
 
@@ -60,12 +57,7 @@ func (g *Q4GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 		
 		result = append(result, groupedRecord)
 		
-		log.Printf("action: groupby_q4_emit | store_id: %s | user_id: %s | "+
-			"transaction_count: %d", storeID, userID, count)
 	}
-
-	log.Printf("action: groupby_q4_complete | total_groups: %d | eof: %t",
-		len(result), eof)
 
 	return result, nil
 }

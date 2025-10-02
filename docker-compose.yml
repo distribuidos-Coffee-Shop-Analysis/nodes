@@ -7,7 +7,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=filter_year
-    - NODE_ID=01
+    - NODE_ID=1
     networks:
     - coffee_net
     volumes:
@@ -20,7 +20,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=filter_year
-    - NODE_ID=02
+    - NODE_ID=2
     networks:
     - coffee_net
     volumes:
@@ -33,7 +33,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=filter_year
-    - NODE_ID=03
+    - NODE_ID=3
     networks:
     - coffee_net
     volumes:
@@ -46,7 +46,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=filter_year
-    - NODE_ID=04
+    - NODE_ID=4
     networks:
     - coffee_net
     volumes:
@@ -59,7 +59,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=filter_hour
-    - NODE_ID=01
+    - NODE_ID=1
     networks:
     - coffee_net
     volumes:
@@ -72,7 +72,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=filter_hour
-    - NODE_ID=02
+    - NODE_ID=2
     networks:
     - coffee_net
     volumes:
@@ -85,7 +85,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=filter_hour
-    - NODE_ID=03
+    - NODE_ID=3
     networks:
     - coffee_net
     volumes:
@@ -98,7 +98,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=filter_hour
-    - NODE_ID=04
+    - NODE_ID=4
     networks:
     - coffee_net
     volumes:
@@ -111,7 +111,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=filter_amount
-    - NODE_ID=01
+    - NODE_ID=1
     networks:
     - coffee_net
     volumes:
@@ -124,7 +124,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=filter_amount
-    - NODE_ID=02
+    - NODE_ID=2
     networks:
     - coffee_net
     volumes:
@@ -137,7 +137,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=filter_amount
-    - NODE_ID=03
+    - NODE_ID=3
     networks:
     - coffee_net
     volumes:
@@ -150,7 +150,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=filter_amount
-    - NODE_ID=04
+    - NODE_ID=4
     networks:
     - coffee_net
     volumes:
@@ -163,7 +163,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=q2_group
-    - NODE_ID=01
+    - NODE_ID=1
     networks:
     - coffee_net
     volumes:
@@ -176,7 +176,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=q2_group
-    - NODE_ID=02
+    - NODE_ID=2
     networks:
     - coffee_net
     volumes:
@@ -189,20 +189,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=q2_group
-    - NODE_ID=03
-    networks:
-    - coffee_net
-    volumes:
-    - ./config/q2_group.json:/app/config/q2_group.json:ro
-  group-by-node-q2-04:
-    build: .
-    environment:
-    - RABBITMQ_HOST=rabbitmq
-    - RABBITMQ_PORT=5672
-    - RABBITMQ_USER=admin
-    - RABBITMQ_PASSWORD=admin
-    - NODE_ROLE=q2_group
-    - NODE_ID=04
+    - NODE_ID=3
     networks:
     - coffee_net
     volumes:
@@ -215,7 +202,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=q3_group
-    - NODE_ID=01
+    - NODE_ID=1
     networks:
     - coffee_net
     volumes:
@@ -228,7 +215,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=q3_group
-    - NODE_ID=02
+    - NODE_ID=2
     networks:
     - coffee_net
     volumes:
@@ -241,7 +228,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=q3_group
-    - NODE_ID=03
+    - NODE_ID=3
     networks:
     - coffee_net
     volumes:
@@ -254,11 +241,63 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=q3_group
-    - NODE_ID=04
+    - NODE_ID=4
     networks:
     - coffee_net
     volumes:
     - ./config/q3_group.json:/app/config/q3_group.json:ro
+  group-by-node-q4-01:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_group
+    - NODE_ID=1
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_group.json:/app/config/q4_group.json:ro
+  group-by-node-q4-02:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_group
+    - NODE_ID=2
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_group.json:/app/config/q4_group.json:ro
+  group-by-node-q4-03:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_group
+    - NODE_ID=3
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_group.json:/app/config/q4_group.json:ro
+  group-by-node-q4-04:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_group
+    - NODE_ID=4
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_group.json:/app/config/q4_group.json:ro
   aggregate-node-q2-01:
     build: .
     environment:
@@ -267,7 +306,7 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=q2_aggregate
-    - NODE_ID=01
+    - NODE_ID=1
     networks:
     - coffee_net
     volumes:
@@ -280,11 +319,24 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=q3_aggregate
-    - NODE_ID=01
+    - NODE_ID=1
     networks:
     - coffee_net
     volumes:
     - ./config/q3_aggregate.json:/app/config/q3_aggregate.json:ro
+  aggregate-node-q4-01:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_aggregate
+    - NODE_ID=1
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_aggregate.json:/app/config/q4_aggregate.json:ro
   joiner-node-q2-01:
     build: .
     environment:
@@ -293,7 +345,46 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=q2_join
-    - NODE_ID=01
+    - NODE_ID=1
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q2_join.json:/app/config/q2_join.json:ro
+  joiner-node-q2-02:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q2_join
+    - NODE_ID=2
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q2_join.json:/app/config/q2_join.json:ro
+  joiner-node-q2-03:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q2_join
+    - NODE_ID=3
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q2_join.json:/app/config/q2_join.json:ro
+  joiner-node-q2-04:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q2_join
+    - NODE_ID=4
     networks:
     - coffee_net
     volumes:
@@ -306,11 +397,180 @@ services:
     - RABBITMQ_USER=admin
     - RABBITMQ_PASSWORD=admin
     - NODE_ROLE=q3_join
-    - NODE_ID=01
+    - NODE_ID=1
     networks:
     - coffee_net
     volumes:
     - ./config/q3_join.json:/app/config/q3_join.json:ro
+  joiner-node-q3-02:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q3_join
+    - NODE_ID=2
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q3_join.json:/app/config/q3_join.json:ro
+  joiner-node-q3-03:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q3_join
+    - NODE_ID=3
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q3_join.json:/app/config/q3_join.json:ro
+  joiner-node-q3-04:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q3_join
+    - NODE_ID=4
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q3_join.json:/app/config/q3_join.json:ro
+  joiner-node-q4-users-01:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_users
+    - NODE_ID=1
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+  joiner-node-q4-users-02:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_users
+    - NODE_ID=2
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+  joiner-node-q4-users-03:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_users
+    - NODE_ID=3
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+  joiner-node-q4-users-04:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_users
+    - NODE_ID=4
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+  joiner-node-q4-users-05:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_users
+    - NODE_ID=5
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+  joiner-node-q4-stores-01:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_stores
+    - NODE_ID=1
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_stores.json:/app/config/q4_join_stores.json:ro
+  joiner-node-q4-stores-02:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_stores
+    - NODE_ID=2
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_stores.json:/app/config/q4_join_stores.json:ro
+  joiner-node-q4-stores-03:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_stores
+    - NODE_ID=3
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_stores.json:/app/config/q4_join_stores.json:ro
+  joiner-node-q4-stores-04:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_stores
+    - NODE_ID=4
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_stores.json:/app/config/q4_join_stores.json:ro
+  joiner-node-q4-stores-05:
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_stores
+    - NODE_ID=5
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_stores.json:/app/config/q4_join_stores.json:ro
 networks:
   coffee_net:
     external: true

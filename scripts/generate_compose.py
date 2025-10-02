@@ -40,7 +40,7 @@ def role_from_type(node_type: str) -> str:
 
 
 def make_service_name(node_type: str, idx: int) -> str:
-    return f"{node_type}-{idx:02d}"
+    return f"{node_type}-{idx}"
 
 
 def generate_compose(output_file, type_counts):
@@ -63,6 +63,7 @@ def generate_compose(output_file, type_counts):
                 f"NODE_ID={i}",
             ]
             service = {
+                "container_name": svc_name,
                 "build": ".",
                 "environment": env,
                 "networks": ["coffee_net"],

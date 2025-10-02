@@ -42,7 +42,7 @@ func NewHandler(role common.NodeRole) Handler {
 		transformer := func(record protocol.Record) protocol.Record {
 			txn, ok := record.(*protocol.TransactionRecord)
 			if !ok {
-				return record 
+				return record
 			}
 			return &protocol.Q1Record{
 				TransactionID: txn.TransactionID,
@@ -75,13 +75,11 @@ func NewHandler(role common.NodeRole) Handler {
 		joiner := joiners.NewQ3Joiner()
 		return handlers.NewJoinerHandler(joiner)
 	case common.RoleJoinerQ4U:
-		//joiner := joiners.NewQ4Joiner()
-		//return handlers.NewJoinerHandler(joiner)
-		return nil
+		joiner := joiners.NewQ4UserJoiner()
+		return handlers.NewJoinerHandler(joiner)
 	case common.RoleJoinerQ4S:
-		//joiner := joiners.NewQ4Joiner()
-		//return handlers.NewJoinerHandler(joiner)
-		return nil
+		joiner := joiners.NewQ4StoreJoiner()
+		return handlers.NewJoinerHandler(joiner)
 	default:
 		panic("unknown role for handler")
 	}

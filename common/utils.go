@@ -1,7 +1,10 @@
 package common
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"math/big"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
@@ -105,3 +108,29 @@ func separateQ2Records(records []protocol.Record, datasetType protocol.DatasetTy
 	return group1, group2
 }
 
+// GetJoinerPartition calculates the joiner partition for a given user_id using consistent hashing.
+//
+// This ensures that the same user_id always maps to the same joiner node,
+// which is critical for distributed join operations.
+//
+// Args:
+//   - userID: The user ID to hash (string)
+//   - joinersCount: Total number of joiner nodes
+//
+// Returns:
+//   - int: The partition number (0 to joinersCount-1)
+func GetJoinerPartition(userID string, joinersCount int) int {
+	// Create SHA256 hash (same as Python implementation in connection-node)
+	hash := sha256.Sum256([]byte(userID))
+	hashHex := hex.EncodeToString(hash[:])
+
+	// Convert hex string to big integer
+	hashInt := new(big.Int)
+	hashInt.SetString(hashHex, 16)
+
+	// Calculate modulo to get partition
+	joinersCountBig := big.NewInt(int64(joinersCount))
+	partition := new(big.Int).Mod(hashInt, joinersCountBig)
+
+	return int(partition.Int64())
+}

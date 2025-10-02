@@ -42,7 +42,7 @@ func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 	// Only count as one batch per batchIndex (Q2 has dual datasets but same batchIndex)
 	// We'll track seen batch indices to avoid double counting
 	a.trackBatchIndex(batchIndex)
-	
+
 	// Process records locally without lock (no shared state access)
 	localQuantity := make(map[string]int)
 	localProfit := make(map[string]float64)
@@ -234,4 +234,22 @@ func findMostProfitableItem(items map[string]float64) (string, float64) {
 	}
 
 	return bestItem, bestProfit
+}
+
+// GetBatchesToPublish returns a single batch with all aggregated results
+// Q2 doesn't need partitioning, so returns a single batch with empty routing key (uses default from config)
+func (a *Q2Aggregate) GetBatchesToPublish(batchIndex int) ([]BatchToPublish, error) {
+	results, err := a.Finalize()
+	if err != nil {
+		return nil, err
+	}
+
+	batch := protocol.NewQ2AggregateBatch(batchIndex, results, true)
+
+	return []BatchToPublish{
+		{
+			Batch:      batch,
+			RoutingKey: "", 
+		},
+	}, nil
 }

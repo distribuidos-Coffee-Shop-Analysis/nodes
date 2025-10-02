@@ -138,14 +138,14 @@ func GetJoinerPartition(userID string, joinersCount int) int {
 // NodeIDToPartition converts NODE_ID string to partition number (int)
 // Both NODE_ID and partitions are 1-based
 // Example: "1" -> 1, "2" -> 2, "3" -> 3
-// Returns -1 and err if conversion fails or if nodeID < 1
-func NodeIDToPartition(nodeID string) (int, error) {
+// Returns -1 if conversion fails or if nodeID < 1
+func NodeIDToPartition(nodeID string) int {
 	var nodeNum int
 	_, err := fmt.Sscanf(nodeID, "%d", &nodeNum)
 	if err != nil || nodeNum < 1 {
-		return -1, err
+		return -1
 	}
-	return nodeNum, nil
+	return nodeNum
 }
 
 // BuildQ4UserJoinerRoutingKey builds the routing key for Q4 User Joiner based on partition

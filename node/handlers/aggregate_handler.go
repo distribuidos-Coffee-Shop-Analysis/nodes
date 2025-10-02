@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"log"
 	"sync"
 
@@ -98,23 +99,18 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	shouldFinalize := h.numberOfBatchesRemaining == 0 && h.eofReceived && h.oneTimeFinalize
 
 	if shouldFinalize {
-		h.oneTimeFinalize = false // Ensure "h.aggregate.finalize()" runs only once
+		h.oneTimeFinalize = false // Ensure finalize runs only once
 		h.mu.Unlock()             // Now we can unlock
 		log.Printf("action: aggregate_finalize | aggregate: %s | result: start", h.aggregate.Name())
 
-		// Finalize aggregation and get results
-		finalResults, err := h.aggregate.Finalize()
+		batchesToPublish, err := h.aggregate.GetBatchesToPublish(batchMessage.BatchIndex)
 		if err != nil {
-			log.Printf("action: aggregate_finalize | aggregate: %s | result: fail | error: %v",
+			log.Printf("action: get_batches_to_publish | aggregate: %s | result: fail | error: %v",
 				h.aggregate.Name(), err)
 			msg.Nack(false, true)
 			return err
 		}
 
-		// Create the final batch to publish
-		finalBatch := h.createFinalBatch(finalResults, batchMessage.BatchIndex)
-
-		// Publish final results
 		publisher, err := middleware.NewPublisher(connection, wiring)
 		if err != nil {
 			log.Printf("action: create_publisher | aggregate: %s | result: fail | error: %v",
@@ -123,17 +119,18 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 			return err
 		}
 
-		if err := publisher.SendToDatasetOutputExchanges(finalBatch); err != nil {
+		err = h.publishBatches(publisher, batchesToPublish)
+		publisher.Close()
+
+		if err != nil {
 			log.Printf("action: aggregate_publish | aggregate: %s | result: fail | error: %v",
 				h.aggregate.Name(), err)
 			msg.Nack(false, true)
 			return err
 		}
 
-		publisher.Close()
-
-		log.Printf("action: aggregate_publish | aggregate: %s | result: success | "+
-			"final_record_count: %d", h.aggregate.Name(), len(finalResults))
+		log.Printf("action: aggregate_publish | aggregate: %s | result: success | batches_published: %d",
+			h.aggregate.Name(), len(batchesToPublish))
 	} else {
 		h.mu.Unlock()
 	}
@@ -141,13 +138,19 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	return nil
 }
 
-// createFinalBatch creates the appropriate batch message for the aggregated results
-func (h *AggregateHandler) createFinalBatch(results []protocol.Record, batchIndex int) *protocol.BatchMessage {
-	// For Q2, we need to create a dual dataset batch
-	if h.aggregate.Name() == "q2_aggregate_best_selling_most_profits" {
-		return protocol.NewQ2AggregateBatch(batchIndex, results, true)
+// publishBatches publishes all batches, using custom routing keys when provided
+func (h *AggregateHandler) publishBatches(publisher *middleware.Publisher, batchesToPublish []aggregates.BatchToPublish) error {
+	for i, batchToPublish := range batchesToPublish {
+
+
+		err := publisher.SendToDatasetOutputExchangesWithRoutingKey(batchToPublish.Batch, batchToPublish.RoutingKey)
+		if err != nil {
+			return fmt.Errorf("failed to publish batch %d: %w", i+1, err)
+		}
+
+		log.Printf("action: publish_batch | batch_num: %d | routing_key: %s | records: %d",
+			i+1, batchToPublish.RoutingKey, len(batchToPublish.Batch.Records))
 	}
 
-	// For other aggregates, use regular batch
-	return protocol.NewAggregateBatch(batchIndex, results, true)
+	return nil
 }

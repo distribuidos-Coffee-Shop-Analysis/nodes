@@ -34,6 +34,15 @@ func (p *Publisher) SendToDatasetOutputExchanges(b *protocol.BatchMessage) error
 	return p.publish(route.Exchange, route.RoutingKey, common.EncodeToByteArray(b))
 }
 
+// SendToDatasetOutputExchangesWithRoutingKey sends a batch message with a custom routing key
+func (p *Publisher) SendToDatasetOutputExchangesWithRoutingKey(b *protocol.BatchMessage, customRoutingKey string) error {
+	route, ok := p.wiring.Outputs[b.DatasetType]
+	if !ok {
+		return fmt.Errorf("no output route for dataset %v in role %s", b.DatasetType, p.wiring.Role)
+	}
+	return p.publish(route.Exchange, customRoutingKey, common.EncodeToByteArray(b))
+}
+
 func (p *Publisher) publish(exchange, rk string, body []byte) error {
 	return p.channel.Publish(exchange, rk, false, false, amqp.Publishing{
 		DeliveryMode: amqp.Persistent,

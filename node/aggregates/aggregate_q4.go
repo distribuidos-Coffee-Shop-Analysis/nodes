@@ -28,7 +28,7 @@ type Q4Aggregate struct {
 // NewQ4Aggregate creates a new Q4Aggregate instance.
 func NewQ4Aggregate() *Q4Aggregate {
 	return &Q4Aggregate{
-		storeUserCounts: make(map[string]map[string]int),
+		storeUserCounts:  make(map[string]map[string]int),
 		seenBatchIndices: make(map[int]bool),
 		uniqueBatchCount: atomic.Int32{},
 	}
@@ -105,12 +105,13 @@ func (a *Q4Aggregate) GetAccumulatedBatchCount() int {
 }
 
 // Finalize generates the top 3 customers per store.
+// Returns all customers with purchase counts that are in the top 3 distinct purchase counts.
 func (q *Q4Aggregate) Finalize() ([]protocol.Record, error) {
 	log.Printf("action: q4_finalize_start | stores: %d", len(q.storeUserCounts))
 
 	var results []protocol.Record
 
-	// For each store, get top 3 customers
+	// For each store, get customers with top 3 distinct purchase counts
 	for storeId, userCounts := range q.storeUserCounts {
 		// Create slice of customers for this store
 		type Customer struct {
@@ -131,23 +132,38 @@ func (q *Q4Aggregate) Finalize() ([]protocol.Record, error) {
 			return customers[i].TransactionCount > customers[j].TransactionCount
 		})
 
-		// Take top 3
-		top3Count := len(customers)
-		if top3Count > 3 {
-			top3Count = 3
+		// Find the top 3 distinct purchase counts
+		distinctCounts := make(map[int]bool)
+		topCounts := make([]int, 0, 3)
+
+		for _, customer := range customers {
+			if !distinctCounts[customer.TransactionCount] {
+				distinctCounts[customer.TransactionCount] = true
+				topCounts = append(topCounts, customer.TransactionCount)
+				if len(topCounts) == 3 {
+					break
+				}
+			}
 		}
 
-		for i := 0; i < top3Count; i++ {
-			customer := customers[i]
-			q4Agg := &protocol.Q4AggregatedRecord{
-				StoreID:      storeId,
-				UserID:       customer.UserId,
-				PurchasesQty: strconv.Itoa(customer.TransactionCount),
-			}
-			results = append(results, q4Agg)
+		// Get all customers whose purchase count is in the top 3 distinct counts
+		topCountsMap := make(map[int]bool)
+		for _, count := range topCounts {
+			topCountsMap[count] = true
+		}
 
-			log.Printf("action: q4_top_customer | store: %s | user: %s | transactions: %d | rank: %d",
-				storeId, customer.UserId, customer.TransactionCount, i+1)
+		for _, customer := range customers {
+			if topCountsMap[customer.TransactionCount] {
+				q4Agg := &protocol.Q4AggregatedRecord{
+					StoreID:      storeId,
+					UserID:       customer.UserId,
+					PurchasesQty: strconv.Itoa(customer.TransactionCount),
+				}
+				results = append(results, q4Agg)
+
+				log.Printf("action: q4_top_customer | store: %s | user: %s | transactions: %d",
+					storeId, customer.UserId, customer.TransactionCount)
+			}
 		}
 	}
 
@@ -167,7 +183,6 @@ func (q *Q4Aggregate) GetBatchesToPublish(batchIndex int) ([]BatchToPublish, err
 	if err != nil {
 		return nil, err
 	}
-
 
 	partitionedRecords := make(map[int][]protocol.Record)
 

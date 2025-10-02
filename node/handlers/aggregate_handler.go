@@ -66,9 +66,6 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 		return err
 	}
 
-	log.Printf("action: aggregate_accumulate | aggregate: %s | batch_index: %d | records: %d",
-		h.aggregate.Name(), batchMessage.BatchIndex, len(batchMessage.Records))
-
 	h.mu.Lock()
 	// Check if this batch has EOF flag
 	if batchMessage.EOF {

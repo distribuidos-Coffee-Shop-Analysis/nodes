@@ -7,8 +7,8 @@ type RecordJoiner interface {
 	// Name returns the name of this joiner
 	Name() string
 
-	// StoreReferenceData stores reference data (e.g., menu items, users, stores) for future joins
-	StoreReferenceData(records []protocol.Record) error
+	// StoreReferenceDataset stores reference data (e.g., menu items, users, stores) for future joins
+	StoreReferenceDataset(records []protocol.Record) error
 
 	// PerformJoin joins aggregated data with stored reference data
 	PerformJoin(aggregatedRecords []protocol.Record) ([]protocol.Record, error)

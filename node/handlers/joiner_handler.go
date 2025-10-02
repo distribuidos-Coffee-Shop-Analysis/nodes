@@ -12,15 +12,30 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 )
 
+// bufferedBatch holds all necessary information to process a batch later
+type bufferedBatch struct {
+	batchMessage *protocol.BatchMessage
+	connection   *amqp091.Connection
+	wiring       *common.NodeWiring
+	delivery     amqp091.Delivery
+}
+
 // JoinerHandler handles join operations between aggregated data and reference data
 type JoinerHandler struct {
 	joiner joiners.RecordJoiner
+
+	// Synchronization state
+	mu                       sync.Mutex
+	referenceDatasetComplete bool            // Flag indicating if reference dataset EOF was received
+	bufferedAggregateBatches []bufferedBatch // Buffer for aggregate batches that arrive before the reference dataset is complete
 }
 
 // NewJoinerHandler creates a new joiner handler with the specified joiner
 func NewJoinerHandler(joiner joiners.RecordJoiner) *JoinerHandler {
 	return &JoinerHandler{
-		joiner: joiner,
+		joiner:                   joiner,
+		referenceDatasetComplete: false,
+		bufferedAggregateBatches: make([]bufferedBatch, 0),
 	}
 }
 
@@ -53,7 +68,7 @@ func (h *JoinerHandler) Handle(batchMessage *protocol.BatchMessage, connection *
 
 	// Route message based on dataset type using joiner's acceptance methods
 	if h.joiner.AcceptsReferenceType(batchMessage.DatasetType) {
-		return h.handleReferenceData(batchMessage, msg)
+		return h.handleReferenceDataset(batchMessage, msg)
 	} else if h.joiner.AcceptsAggregateType(batchMessage.DatasetType) {
 		return h.handleAggregatedData(batchMessage, connection, wiring, msg)
 	} else {
@@ -63,13 +78,14 @@ func (h *JoinerHandler) Handle(batchMessage *protocol.BatchMessage, connection *
 	}
 }
 
-// handleReferenceData processes and stores reference data (e.g., menu items)
-func (h *JoinerHandler) handleReferenceData(batchMessage *protocol.BatchMessage, msg amqp091.Delivery) error {
+// handleReferenceDataset processes and stores reference data (e.g., menu items, stores, users)
+func (h *JoinerHandler) handleReferenceDataset(batchMessage *protocol.BatchMessage, msg amqp091.Delivery) error {
 
-	log.Printf("action: store_reference_data | joiner: %s | count: %d", h.joiner.Name(), len(batchMessage.Records))
+	log.Printf("action: store_reference_data | joiner: %s | count: %d | eof: %t",
+		h.joiner.Name(), len(batchMessage.Records), batchMessage.EOF)
 
 	// Store reference data using the joiner's specific logic
-	err := h.joiner.StoreReferenceData(batchMessage.Records)
+	err := h.joiner.StoreReferenceDataset(batchMessage.Records)
 	if err != nil {
 		log.Printf("action: store_reference_data | result: fail | error: %v", err)
 		msg.Nack(false, true)
@@ -77,12 +93,47 @@ func (h *JoinerHandler) handleReferenceData(batchMessage *protocol.BatchMessage,
 	}
 
 	log.Printf("action: reference_data_stored | joiner: %s | result: success", h.joiner.Name())
+
+	// Check if this is the last batch of reference data (EOF received)
+	if batchMessage.EOF {
+		h.mu.Lock()
+		h.referenceDatasetComplete = true
+		bufferedBatches := h.bufferedAggregateBatches
+		h.bufferedAggregateBatches = make([]bufferedBatch, 0) // Clear buffer
+		h.mu.Unlock()
+
+		log.Printf("action: reference_data_complete | joiner: %s | buffered_batches: %d",
+			h.joiner.Name(), len(bufferedBatches))
+
+		// Process any buffered aggregate batches that arrived before reference data was complete
+		if len(bufferedBatches) > 0 {
+			log.Printf("action: process_buffered_batches_start | joiner: %s | count: %d",
+				h.joiner.Name(), len(bufferedBatches))
+
+			for i, buffered := range bufferedBatches {
+				log.Printf("action: process_buffered_batch | joiner: %s | batch_num: %d/%d | batch_index: %d",
+					h.joiner.Name(), i+1, len(bufferedBatches), buffered.batchMessage.BatchIndex)
+
+				// Process this buffered batch (perform join and publish)
+				err := h.processAggregatedData(buffered.batchMessage, buffered.connection, buffered.wiring, buffered.delivery)
+				if err != nil {
+					log.Printf("action: process_buffered_batch | result: fail | batch_num: %d | error: %v", i+1, err)
+					// Continue processing other batches even if one fails
+					continue
+				}
+			}
+
+			log.Printf("action: process_buffered_batches_complete | joiner: %s | processed: %d",
+				h.joiner.Name(), len(bufferedBatches))
+		}
+	}
+
 	msg.Ack(false)
 	return nil
 }
 
-// handleAggregatedData processes aggregated data and performs joins with stored reference data
-func (h *JoinerHandler) handleAggregatedData(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
+// processAggregatedData performs the actual join and publishes results (without ACK logic)
+func (h *JoinerHandler) processAggregatedData(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
 	wiring *common.NodeWiring, msg amqp091.Delivery) error {
 
 	log.Printf("action: join_aggregate_data | joiner: %s | records: %d", h.joiner.Name(), len(batchMessage.Records))
@@ -118,6 +169,38 @@ func (h *JoinerHandler) handleAggregatedData(batchMessage *protocol.BatchMessage
 
 	msg.Ack(false)
 	return nil
+}
+
+// handleAggregatedData processes aggregated data - buffers if reference data not ready, or joins immediately
+func (h *JoinerHandler) handleAggregatedData(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
+	wiring *common.NodeWiring, msg amqp091.Delivery) error {
+
+	// Check if reference data is complete
+	h.mu.Lock()
+	refDataComplete := h.referenceDatasetComplete
+	h.mu.Unlock()
+
+	if !refDataComplete {
+		// Reference data not ready yet - buffer this aggregate batch
+		h.mu.Lock()
+		h.bufferedAggregateBatches = append(h.bufferedAggregateBatches, bufferedBatch{
+			batchMessage: batchMessage,
+			connection:   connection,
+			wiring:       wiring,
+			delivery:     msg,
+		})
+		bufferedCount := len(h.bufferedAggregateBatches)
+		h.mu.Unlock()
+
+		log.Printf("action: buffer_aggregate_batch | joiner: %s | batch_index: %d | buffered_count: %d | reason: reference_data_not_ready",
+			h.joiner.Name(), batchMessage.BatchIndex, bufferedCount)
+
+		// Don't ACK yet - will ACK when we process from buffer
+		return nil
+	}
+
+	// Reference data is ready - process immediately
+	return h.processAggregatedData(batchMessage, connection, wiring, msg)
 }
 
 // createOutputBatch creates the output batch with the correct dataset type

@@ -27,8 +27,8 @@ func (j *Q2Joiner) Name() string {
 	return "q2_joiner_menu_items"
 }
 
-// StoreReferenceData stores menu item reference data for future joins
-func (j *Q2Joiner) StoreReferenceData(records []protocol.Record) error {
+// StoreReferenceDataset stores menu item reference data for future joins
+func (j *Q2Joiner) StoreReferenceDataset(records []protocol.Record) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 

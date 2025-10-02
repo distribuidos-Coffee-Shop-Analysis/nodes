@@ -28,7 +28,7 @@ func (g *Q2GroupBy) Name() string {
 // 2. Subtotal records (sum of subtotals)
 func (g *Q2GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protocol.Record, error) {
 	// Maps to accumulate data by year_month + item_id
-	groupQuantity := make(map[string]int)     // For counting transactions
+	groupQuantity := make(map[string]float64) // For summing quantities
 	groupSubtotal := make(map[string]float64) // For summing subtotals
 
 	for _, record := range records {
@@ -39,11 +39,11 @@ func (g *Q2GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 		}
 
 		// Skip records with missing required fields
-		if transactionItemRecord.ItemID == "" || transactionItemRecord.CreatedAt == "" || transactionItemRecord.Subtotal == "" {
+		if transactionItemRecord.ItemID == "" || transactionItemRecord.CreatedAt == "" || transactionItemRecord.Subtotal == "" || transactionItemRecord.Quantity == "" {
 			log.Printf("action: groupby_q2_filter_null | result: dropped | "+
-				"transaction_id: %s | item_id: %s | created_at: %s | subtotal: %s | reason: null_groupby_key",
+				"transaction_id: %s | item_id: %s | created_at: %s | subtotal: %s | quantity: %s | reason: null_groupby_key",
 				transactionItemRecord.TransactionID, transactionItemRecord.ItemID,
-				transactionItemRecord.CreatedAt, transactionItemRecord.Subtotal)
+				transactionItemRecord.CreatedAt, transactionItemRecord.Subtotal, transactionItemRecord.Quantity)
 			continue
 		}
 
@@ -53,6 +53,15 @@ func (g *Q2GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 			log.Printf("action: groupby_q2_parse_date | result: error | "+
 				"transaction_id: %s | created_at: %s | error: %v",
 				transactionItemRecord.TransactionID, transactionItemRecord.CreatedAt, err)
+			continue
+		}
+
+		// Parse quantity
+		quantity, err := strconv.ParseFloat(transactionItemRecord.Quantity, 64)
+		if err != nil {
+			log.Printf("action: groupby_q2_parse_quantity | result: error | "+
+				"transaction_id: %s | quantity: %s | error: %v",
+				transactionItemRecord.TransactionID, transactionItemRecord.Quantity, err)
 			continue
 		}
 
@@ -68,8 +77,8 @@ func (g *Q2GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 		// Create group key: year_month|item_id
 		key := fmt.Sprintf("%s|%s", yearMonth, transactionItemRecord.ItemID)
 
-		// Accumulate quantity (count) and subtotal (sum)
-		groupQuantity[key]++
+		// Accumulate quantity (sum) and subtotal (sum)
+		groupQuantity[key] += quantity
 		groupSubtotal[key] += subtotal
 	}
 
@@ -86,7 +95,7 @@ func (g *Q2GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 		quantityRecord := &protocol.Q2GroupWithQuantityRecord{
 			YearMonth:   yearMonth,
 			ItemID:      itemID,
-			SellingsQty: strconv.Itoa(quantity),
+			SellingsQty: fmt.Sprintf("%.0f", quantity), // Format as integer-like (no decimals)
 		}
 		quantityRecords = append(quantityRecords, quantityRecord)
 

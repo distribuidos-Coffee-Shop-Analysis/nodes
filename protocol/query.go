@@ -412,16 +412,17 @@ func NewQ4JoinedWithUserRecordFromParts(parts []string) (*Q4JoinedWithUserRecord
 
 // ===== Q4 Final Joined Records (second join with stores) =====
 
-// Q4JoinedWithStoreAndUserRecord represents final Q4 data: store_name, birthdate
+// Q4JoinedWithStoreAndUserRecord represents final Q4 data: store_name, purchases_qty, birthdate
 type Q4JoinedWithStoreAndUserRecord struct {
-	StoreName string
-	Birthdate string
+	StoreName    string
+	PurchasesQty string
+	Birthdate    string
 }
 
-const Q4JoinedWithStoreAndUserRecordParts = 2
+const Q4JoinedWithStoreAndUserRecordParts = 3
 
 func (q *Q4JoinedWithStoreAndUserRecord) Serialize() string {
-	return fmt.Sprintf("%s|%s", q.StoreName, q.Birthdate)
+	return fmt.Sprintf("%s|%s|%s", q.StoreName, q.PurchasesQty, q.Birthdate)
 }
 
 func (q *Q4JoinedWithStoreAndUserRecord) GetType() DatasetType {
@@ -434,7 +435,8 @@ func NewQ4JoinedWithStoreAndUserRecordFromParts(parts []string) (*Q4JoinedWithSt
 			Q4JoinedWithStoreAndUserRecordParts, len(parts))
 	}
 	return &Q4JoinedWithStoreAndUserRecord{
-		StoreName: parts[0],
-		Birthdate: parts[1],
+		StoreName:    parts[0],
+		PurchasesQty: parts[1],
+		Birthdate:    parts[2],
 	}, nil
 }

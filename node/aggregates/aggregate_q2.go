@@ -104,8 +104,6 @@ func (a *Q2Aggregate) trackBatchIndex(batchIndex int) {
 	if !a.seenBatchIndices[batchIndex] {
 		a.seenBatchIndices[batchIndex] = true
 		a.uniqueBatchCount.Add(1)
-		log.Printf("action: q2_new_batch_tracked | batch_index: %d | unique_count: %d",
-			batchIndex, int(a.uniqueBatchCount.Load()))
 	}
 }
 

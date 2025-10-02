@@ -85,3 +85,6 @@ if __name__ == "__main__":
     type_counts = parse_pairs(sys.argv[2:])
     generate_compose(output_file, type_counts)
 
+# ./generar_compose.sh docker-compose.yml filter-node-year=4 filter-node-hour=4 filter-node-amount=4 group-by-node-q2=4 group-by-node-q3=4 aggregate-node-q2=1 aggregate-node-q3=1 joiner-node-q2=1 joiner-node-q3=1 
+
+# group-by-node-q4=4 aggregate-node-q4=1 joiner-node-q4-users=1 joiner-node-q4-stores=1

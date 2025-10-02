@@ -67,11 +67,6 @@ func (g *Q3GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 
 		// Accumulate TPV
 		groupTPV[key] += finalAmount
-
-		log.Printf("action: groupby_q3_accumulate | transaction_id: %s | "+
-			"year_half: %s | store_id: %s | amount: %.2f | accumulated_tpv: %.2f",
-			transactionRecord.TransactionID, yearHalf, transactionRecord.StoreID,
-			finalAmount, groupTPV[key])
 	}
 
 	// Convert grouped data to Q3GroupedRecord
@@ -88,9 +83,6 @@ func (g *Q3GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 		}
 
 		result = append(result, groupedRecord)
-
-		log.Printf("action: groupby_q3_emit | year_half: %s | store_id: %s | tpv: %.2f",
-			yearHalf, storeID, tpv)
 	}
 
 	log.Printf("action: groupby_q3_complete | total_groups: %d | eof: %t",

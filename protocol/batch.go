@@ -178,9 +178,6 @@ func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 		}
 	}
 
-	log.Printf("action: parse_batch_message | result: success | batch_index: %d | eof: %t | record_count: %d | fields_per_record: %d",
-		batchIndex, eof, recordCount, fieldsPerRecord)
-
 	return &BatchMessage{
 		Type:        MessageTypeBatch,
 		DatasetType: datasetType,
@@ -262,8 +259,6 @@ func parseQ2DualDataset(parts []string, datasetType DatasetType) ([]Record, erro
 		allRecords = append(allRecords, record)
 		currentIdx = endIdx
 	}
-
-	log.Printf("action: parse_q2_complete | total_records: %d", len(allRecords))
 
 	return allRecords, nil
 }

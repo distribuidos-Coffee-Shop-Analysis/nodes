@@ -17,15 +17,17 @@ type Q3Aggregate struct {
 	// Map to accumulate TPV by year_half + store_id
 	tpvData map[string]float64 // year_half|store_id -> accumulated tpv
 
-	// Track number of batches received
-	batchesReceived atomic.Int32 // Lock is not needed for atomic operations
+	// Track unique batch indices
+	seenBatchIndices map[int]bool // track which batch indices we've seen
+	uniqueBatchCount atomic.Int32 // count of unique batch indices
 }
 
 // NewQ3Aggregate creates a new Q3 aggregate processor
 func NewQ3Aggregate() *Q3Aggregate {
 	return &Q3Aggregate{
 		tpvData:         make(map[string]float64),
-		batchesReceived: atomic.Int32{},
+		seenBatchIndices: make(map[int]bool),
+		uniqueBatchCount: atomic.Int32{},
 	}
 }
 
@@ -35,11 +37,9 @@ func (a *Q3Aggregate) Name() string {
 
 // AccumulateBatch processes and accumulates a batch of Q3 grouped records
 func (a *Q3Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int) error {
-	// Increment batch counter FIRST (atomic, thread-safe without lock)
-	a.batchesReceived.Add(1)
-
-	log.Printf("action: q3_aggregate_batch | batch_index: %d | record_count: %d",
-		batchIndex, len(records))
+	// Only count as one batch per batchIndex (Q2 has dual datasets but same batchIndex)
+	// We'll track seen batch indices to avoid double counting
+	a.trackBatchIndex(batchIndex)
 
 	// Process records locally without lock (no shared state access)
 	localTPV := make(map[string]float64)
@@ -82,10 +82,6 @@ func (a *Q3Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 
 	for key, tpv := range localTPV {
 		a.tpvData[key] += tpv
-
-		log.Printf("action: q3_aggregate_accumulate | key: %s | "+
-			"batch_tpv: %.2f | accumulated_tpv: %.2f",
-			key, tpv, a.tpvData[key])
 	}
 
 	return nil
@@ -122,7 +118,17 @@ func (a *Q3Aggregate) Finalize() ([]protocol.Record, error) {
 
 // GetAccumulatedBatchCount returns the number of batches received so far
 func (a *Q3Aggregate) GetAccumulatedBatchCount() int {
-	return int(a.batchesReceived.Load()) // No lock needed for atomic read
+	return int(a.uniqueBatchCount.Load()) // No lock needed for atomic read
+}
+
+func (a *Q3Aggregate) trackBatchIndex(batchIndex int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !a.seenBatchIndices[batchIndex] {
+		a.seenBatchIndices[batchIndex] = true
+		a.uniqueBatchCount.Add(1)
+	}
 }
 
 // GetBatchesToPublish returns a single batch with all aggregated results

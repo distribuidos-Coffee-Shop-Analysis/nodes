@@ -2,6 +2,7 @@ package filters
 
 import (
 	"fmt"
+	"log"
 	"strconv"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
@@ -34,6 +35,10 @@ func (af *AmountFilter) Filter(record protocol.Record) bool {
 	if err != nil {
 		return false
 	}
+
+	log.Printf("action: AMOUNT FILTER | transaction_id: %s | "+
+			"final amount: %s f",
+			transactionRecord.TransactionID, transactionRecord.FinalAmount)
 
 	return amount > int64(af.MinAmount)
 }

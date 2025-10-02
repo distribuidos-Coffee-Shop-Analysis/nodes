@@ -73,6 +73,10 @@ func (tfh *FilterHandler) Handle(batchMessage *protocol.BatchMessage, connection
 			transformedRecords = append(transformedRecords, tfh.transformer(record))
 		}
 		filteredRecords = transformedRecords
+		if len(filteredRecords) > 0 {
+			log.Printf("action: FILTERED RECORDS | original_count: %d | filtered_count: %d | transformed_count: %d | RECORDS: %v",
+				len(batchMessage.Records), len(filteredRecords), len(transformedRecords), filteredRecords)
+		}
 	}
 
 	// if len(filteredRecords) == 0 && !batchMessage.EOF {

@@ -6,7 +6,7 @@
       "routing_key": ""
     },
     {
-      "exchange": "menu_items_exchange",
+      "exchange": "stores_exchange",
       "routing_key": ""
     }
   ],
@@ -18,7 +18,7 @@
   },
   "declare_exchanges": [
     "q3_aggregated_exchange",
-    "menu_items_exchange",
+    "stores_exchange",
     "replies_exchange"
   ]
 }

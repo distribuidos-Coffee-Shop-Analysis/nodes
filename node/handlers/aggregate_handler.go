@@ -57,31 +57,29 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	clientWG.Add(1)
 	defer clientWG.Done()
 
+	h.mu.Lock()
+
 	// Accumulate this batch
 	err := h.aggregate.AccumulateBatch(batchMessage.Records, batchMessage.BatchIndex)
 	if err != nil {
 		log.Printf("action: aggregate_accumulate | aggregate: %s | result: fail | error: %v",
 			h.aggregate.Name(), err)
+		h.mu.Unlock()
 		msg.Nack(false, true) // Reject and requeue
 		return err
 	}
 
-	h.mu.Lock()
 	// Check if this batch has EOF flag
 	if batchMessage.EOF {
-
-		// Get the current count of accumulated batches
-		accumulatedCount := h.aggregate.GetAccumulatedBatchCount()
-
-		// Calculate how many batches we're still waiting for
-		// batchIndex starts from 1, so it represents the total expected batches
+		// Get the actual count AFTER processing this batch
+		accumulatedCountAfterThisBatch := h.aggregate.GetAccumulatedBatchCount()
 		expectedTotalBatches := batchMessage.BatchIndex
-		h.numberOfBatchesRemaining = expectedTotalBatches - accumulatedCount
+		h.numberOfBatchesRemaining = expectedTotalBatches - accumulatedCountAfterThisBatch
 		h.eofReceived = true
 
 		log.Printf("action: aggregate_eof_received | aggregate: %s | max_batch_index: %d | "+
 			"accumulated_batches: %d | expected_total: %d | batches_remaining: %d",
-			h.aggregate.Name(), batchMessage.BatchIndex, accumulatedCount,
+			h.aggregate.Name(), batchMessage.BatchIndex, accumulatedCountAfterThisBatch,
 			expectedTotalBatches, h.numberOfBatchesRemaining)
 
 	} else if h.eofReceived {
@@ -93,7 +91,7 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	}
 
 	// Check if we should finalize
-	shouldFinalize := h.numberOfBatchesRemaining == 0 && h.eofReceived && h.oneTimeFinalize
+	shouldFinalize := (h.numberOfBatchesRemaining == 0 || h.numberOfBatchesRemaining == -1) && h.eofReceived && h.oneTimeFinalize
 
 	if shouldFinalize {
 		h.oneTimeFinalize = false // Ensure finalize runs only once
@@ -138,7 +136,6 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 // publishBatches publishes all batches, using custom routing keys when provided
 func (h *AggregateHandler) publishBatches(publisher *middleware.Publisher, batchesToPublish []aggregates.BatchToPublish) error {
 	for i, batchToPublish := range batchesToPublish {
-
 
 		err := publisher.SendToDatasetOutputExchangesWithRoutingKey(batchToPublish.Batch, batchToPublish.RoutingKey)
 		if err != nil {

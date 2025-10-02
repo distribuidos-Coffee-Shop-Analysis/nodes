@@ -107,8 +107,8 @@ func (g *Q2GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 	result = append(result, quantityRecords...)
 	result = append(result, subtotalRecords...)
 
-	log.Printf("action: groupby_q2_complete | total_groups: %d | quantity_records: %d | subtotal_records: %d | eof: %t",
-		len(groupQuantity), len(quantityRecords), len(subtotalRecords), eof)
+	// log.Printf("action: groupby_q2_complete | total_groups: %d | quantity_records: %d | subtotal_records: %d | eof: %t",
+	// 	len(groupQuantity), len(quantityRecords), len(subtotalRecords), eof)
 
 	return result, nil
 }

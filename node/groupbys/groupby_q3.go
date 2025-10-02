@@ -85,8 +85,8 @@ func (g *Q3GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 		result = append(result, groupedRecord)
 	}
 
-	log.Printf("action: groupby_q3_complete | total_groups: %d | eof: %t",
-		len(result), eof)
+	// log.Printf("action: groupby_q3_complete | total_groups: %d | eof: %t",
+	// 	len(result), eof)
 
 	return result, nil
 }

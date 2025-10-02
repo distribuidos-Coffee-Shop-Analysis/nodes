@@ -31,14 +31,14 @@ func (af *AmountFilter) Filter(record protocol.Record) bool {
 		return true
 	}
 
-	amount, err := strconv.ParseInt(transactionRecord.FinalAmount, 10, 64)
+	amountFloat, err := strconv.ParseFloat(transactionRecord.FinalAmount, 64)
 	if err != nil {
+		log.Printf("action: AMOUNT_FILTER_PARSE_ERROR | transaction_id: %s | final_amount: %s | error: %v", transactionRecord.TransactionID, transactionRecord.FinalAmount, err)
 		return false
 	}
 
-	log.Printf("action: AMOUNT FILTER | transaction_id: %s | "+
-			"final amount: %s f",
-			transactionRecord.TransactionID, transactionRecord.FinalAmount)
+	amount := int64(amountFloat)
+	result := amount > int64(af.MinAmount)
 
-	return amount > int64(af.MinAmount)
+	return result
 }

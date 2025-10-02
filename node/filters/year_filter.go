@@ -2,6 +2,7 @@ package filters
 
 import (
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
@@ -28,6 +29,7 @@ func (yf *YearFilter) Name() string {
 func (yf *YearFilter) Filter(record protocol.Record) bool {
 	createdAt, err := extractCreatedAt(record)
 	if err != nil {
+		log.Printf("action: YEAR_FILTER_ERROR | error: %v | record_type: %T", err, record)
 		return false
 	}
 
@@ -42,8 +44,11 @@ func (yf *YearFilter) Filter(record protocol.Record) bool {
 	yearStr := strings.Split(datePart, "-")[0]
 	year, err := strconv.Atoi(yearStr)
 	if err != nil {
+		log.Printf("action: YEAR_FILTER_PARSE_ERROR | created_at: %s | date_part: %s | year_str: %s | error: %v", createdAt, datePart, yearStr, err)
 		return false
 	}
 
-	return year >= yf.MinYear && year <= yf.MaxYear
+	result := year >= yf.MinYear && year <= yf.MaxYear
+
+	return result
 }

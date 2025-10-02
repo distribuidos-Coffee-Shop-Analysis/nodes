@@ -2,6 +2,7 @@ package filters
 
 import (
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
@@ -28,6 +29,7 @@ func (hf *HourFilter) Name() string {
 func (hf *HourFilter) Filter(record protocol.Record) bool {
 	createdAt, err := extractCreatedAt(record)
 	if err != nil {
+		log.Printf("action: HOUR_FILTER_ERROR | error: %v | record_type: %T", err, record)
 		return false
 	}
 
@@ -48,6 +50,7 @@ func (hf *HourFilter) Filter(record protocol.Record) bool {
 	}
 
 	if timePart == "" {
+		log.Printf("action: HOUR_FILTER_NO_TIME | created_at: %s", createdAt)
 		return false
 	}
 
@@ -55,8 +58,11 @@ func (hf *HourFilter) Filter(record protocol.Record) bool {
 	hourStr := strings.Split(timePart, ":")[0]
 	hour, err := strconv.Atoi(hourStr)
 	if err != nil {
+		log.Printf("action: HOUR_FILTER_PARSE_ERROR | created_at: %s | time_part: %s | hour_str: %s | error: %v", createdAt, timePart, hourStr, err)
 		return false
 	}
 
-	return hour >= hf.MinHour && hour <= hf.MaxHour
+	result := hour >= hf.MinHour && hour <= hf.MaxHour
+
+	return result
 }

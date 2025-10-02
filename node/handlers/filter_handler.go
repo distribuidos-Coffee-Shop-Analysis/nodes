@@ -63,7 +63,6 @@ func (tfh *FilterHandler) Handle(batchMessage *protocol.BatchMessage, connection
 	clientWG.Add(1)
 	defer clientWG.Done()
 
-	// Filter records using the configured filter
 	filteredRecords := tfh.filterRecords(batchMessage.Records)
 
 	// Transform records if transformer is provided
@@ -73,10 +72,6 @@ func (tfh *FilterHandler) Handle(batchMessage *protocol.BatchMessage, connection
 			transformedRecords = append(transformedRecords, tfh.transformer(record))
 		}
 		filteredRecords = transformedRecords
-		if len(filteredRecords) > 0 {
-			log.Printf("action: FILTERED RECORDS | original_count: %d | filtered_count: %d | transformed_count: %d | RECORDS: %v",
-				len(batchMessage.Records), len(filteredRecords), len(transformedRecords), filteredRecords)
-		}
 	}
 
 	// if len(filteredRecords) == 0 && !batchMessage.EOF {
@@ -104,7 +99,7 @@ func (tfh *FilterHandler) Handle(batchMessage *protocol.BatchMessage, connection
 		return err
 	}
 
-	msg.Ack(false) // Acknowledge the message
+	msg.Ack(false)    // Acknowledge the message
 	publisher.Close() // Close channel after publishing
 
 	return nil

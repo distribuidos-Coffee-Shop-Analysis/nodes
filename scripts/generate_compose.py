@@ -90,4 +90,4 @@ if __name__ == "__main__":
 
 # group-by-node-q4=4 aggregate-node-q4=1 joiner-node-q4-users=1 joiner-node-q4-stores=1
 
-# ./generar_compose.sh docker-compose.yml filter-node-year=4 filter-node-hour=4 filter-node-amount=4 group-by-node-q2=3 group-by-node-q3=4 group-by-node-q4=4 aggregate-node-q2=1 aggregate-node-q3=1 aggregate-node-q4=1 joiner-node-q2=4 joiner-node-q3=4 joiner-node-q4-users=5 joiner-node-q4-stores=5
+# ./generar_compose.sh docker-compose.yml filter-node-year=4 filter-node-hour=4 filter-node-amount=4 group-by-node-q2=4 group-by-node-q3=4 group-by-node-q4=4 aggregate-node-q2=1 aggregate-node-q3=1 aggregate-node-q4=1 joiner-node-q2=1 joiner-node-q3=1 joiner-node-q4-users=1 joiner-node-q4-stores=1

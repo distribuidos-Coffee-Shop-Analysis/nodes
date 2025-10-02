@@ -62,10 +62,6 @@ func (h *JoinerHandler) Handle(batchMessage *protocol.BatchMessage, connection *
 
 	clientWG.Add(1)
 	defer clientWG.Done()
-
-	log.Printf("action: joiner_batch_received | joiner: %s | dataset_type: %s | record_count: %d | eof: %t",
-		h.joiner.Name(), batchMessage.DatasetType, len(batchMessage.Records), batchMessage.EOF)
-
 	// Route message based on dataset type using joiner's acceptance methods
 	if h.joiner.AcceptsReferenceType(batchMessage.DatasetType) {
 		return h.handleReferenceDataset(batchMessage, msg)
@@ -81,9 +77,6 @@ func (h *JoinerHandler) Handle(batchMessage *protocol.BatchMessage, connection *
 // handleReferenceDataset processes and stores reference data (e.g., menu items, stores, users)
 func (h *JoinerHandler) handleReferenceDataset(batchMessage *protocol.BatchMessage, msg amqp091.Delivery) error {
 
-	log.Printf("action: store_reference_data | joiner: %s | count: %d | eof: %t",
-		h.joiner.Name(), len(batchMessage.Records), batchMessage.EOF)
-
 	// Store reference data using the joiner's specific logic
 	err := h.joiner.StoreReferenceDataset(batchMessage.Records)
 	if err != nil {
@@ -91,8 +84,6 @@ func (h *JoinerHandler) handleReferenceDataset(batchMessage *protocol.BatchMessa
 		msg.Nack(false, true)
 		return err
 	}
-
-	log.Printf("action: reference_data_stored | joiner: %s | result: success", h.joiner.Name())
 
 	// Check if this is the last batch of reference data (EOF received)
 	if batchMessage.EOF {
@@ -102,17 +93,10 @@ func (h *JoinerHandler) handleReferenceDataset(batchMessage *protocol.BatchMessa
 		h.bufferedAggregateBatches = make([]bufferedBatch, 0) // Clear buffer
 		h.mu.Unlock()
 
-		log.Printf("action: reference_data_complete | joiner: %s | buffered_batches: %d",
-			h.joiner.Name(), len(bufferedBatches))
-
 		// Process any buffered aggregate batches that arrived before reference data was complete
 		if len(bufferedBatches) > 0 {
-			log.Printf("action: process_buffered_batches_start | joiner: %s | count: %d",
-				h.joiner.Name(), len(bufferedBatches))
 
 			for i, buffered := range bufferedBatches {
-				log.Printf("action: process_buffered_batch | joiner: %s | batch_num: %d/%d | batch_index: %d",
-					h.joiner.Name(), i+1, len(bufferedBatches), buffered.batchMessage.BatchIndex)
 
 				// Process this buffered batch (perform join and publish)
 				err := h.processAggregatedData(buffered.batchMessage, buffered.connection, buffered.wiring, buffered.delivery)

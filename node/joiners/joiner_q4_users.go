@@ -46,8 +46,6 @@ func (j *Q4UserJoiner) StoreReferenceDataset(records []protocol.Record) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	log.Printf("action: q4_user_store_reference_data | count: %d", len(records))
-
 	for _, record := range records {
 		userRecord, ok := record.(*protocol.UserRecord)
 		if !ok {
@@ -59,7 +57,6 @@ func (j *Q4UserJoiner) StoreReferenceDataset(records []protocol.Record) error {
 		j.users[normalizedUserID] = userRecord.Birthdate
 	}
 
-	log.Printf("action: q4_user_reference_data_stored | stored: %d | total_users: %d", len(records), len(j.users))
 	return nil
 }
 

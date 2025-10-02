@@ -1,0 +1,20 @@
+{
+  "role": "filter_amount",
+  "input_queue_name": "q1_queue",
+  "bindings": [
+    {
+      "exchange": "transactions_filtered_hour_exchange",
+      "routing_key": ""
+    }
+  ],
+  "outputs": {
+    "Q1": {
+      "exchange": "replies_exchange",
+      "routing_key": ""
+    }
+  },
+  "declare_exchanges": [
+    "transactions_filtered_hour_exchange",
+    "replies_exchange"
+  ]
+}

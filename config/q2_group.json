@@ -1,0 +1,20 @@
+{
+  "role": "q2_group",
+  "input_queue_name": "q2_queue",
+  "bindings": [
+    {
+      "exchange": "transaction_items_exchange",
+      "routing_key": ""
+    }
+  ],
+  "outputs": {
+    "Q2Groups": {
+      "exchange": "q2_grouped_exchange",
+      "routing_key": ""
+    }
+  },
+  "declare_exchanges": [
+    "transaction_items_exchange",
+    "q2_grouped_exchange"
+  ]
+}

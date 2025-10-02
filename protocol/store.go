@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"fmt"
-	"strings"
 )
 
 // MenuItemRecord represents menu item record: item_id, item_name, category, price, is_seasonal, available_from, available_to
@@ -27,12 +26,6 @@ func (m *MenuItemRecord) Serialize() string {
 // GetType returns the dataset type for menu item records
 func (m *MenuItemRecord) GetType() DatasetType {
 	return DatasetTypeMenuItems
-}
-
-// NewMenuItemRecordFromString creates a MenuItemRecord from a string
-func NewMenuItemRecordFromString(data string) (*MenuItemRecord, error) {
-	parts := strings.Split(data, "|")
-	return NewMenuItemRecordFromParts(parts)
 }
 
 // NewMenuItemRecordFromParts creates a MenuItemRecord from string parts
@@ -76,12 +69,6 @@ func (s *StoreRecord) Serialize() string {
 // GetType returns the dataset type for store records
 func (s *StoreRecord) GetType() DatasetType {
 	return DatasetTypeStores
-}
-
-// NewStoreRecordFromString creates a StoreRecord from a string
-func NewStoreRecordFromString(data string) (*StoreRecord, error) {
-	parts := strings.Split(data, "|")
-	return NewStoreRecordFromParts(parts)
 }
 
 // NewStoreRecordFromParts creates a StoreRecord from string parts

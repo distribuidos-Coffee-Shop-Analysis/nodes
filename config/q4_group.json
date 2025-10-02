@@ -1,0 +1,20 @@
+{
+  "role": "q4_group",
+  "input_queue_name": "q4_queue",
+  "bindings": [
+    {
+      "exchange": "transactions_exchange",
+      "routing_key": ""
+    }
+  ],
+  "outputs": {
+    "Q4Groups": {
+      "exchange": "q4_grouped_exchange",
+      "routing_key": ""
+    }
+  },
+  "declare_exchanges": [
+    "transactions_exchange",
+    "q4_grouped_exchange"
+  ]
+}

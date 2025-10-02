@@ -1,6 +1,8 @@
 package common
 
 import (
+	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -87,11 +89,20 @@ func (c *Config) GetRabbitmqConfig() *RabbitmqConfig {
 
 // GetNodeConfig returns the node configuration
 func (c *Config) GetNodeConfig() *NodeConfig {
-	section := c.cfg.Section("DEFAULT")
+
+	nodeID := os.Getenv("NODE_ID")
+	if nodeID == "" {
+		log.Fatalf("action: config_load | result: fail | error: NODE_ID environment variable is required")
+	}
+
+	nodeRole := os.Getenv("NODE_ROLE")
+	if nodeRole == "" {
+		log.Fatalf("action: config_load | result: fail | error: NODE_ROLE environment variable is required")
+	}
 
 	return &NodeConfig{
-		NodeID: section.Key("NODE_ID").MustString("default-01"),
-		Role:   NodeRole(section.Key("NODE_ROLE").MustString("filter_year")),
+		NodeID: nodeID,
+		Role:   NodeRole(nodeRole),
 	}
 }
 
@@ -99,6 +110,12 @@ func (c *Config) GetNodeConfig() *NodeConfig {
 func (c *Config) GetLoggingLevel() string {
 	section := c.cfg.Section("DEFAULT")
 	return section.Key("LOGGING_LEVEL").MustString("INFO")
+}
+
+// GetQ4JoinersCount returns the number of Q4 joiner nodes for partitioning
+func (c *Config) GetQ4JoinersCount() int {
+	section := c.cfg.Section("DEFAULT")
+	return section.Key("Q4_JOINERS_COUNT").MustInt(1)
 }
 
 // GetConfig returns the global configuration instance (singleton pattern)
@@ -129,8 +146,19 @@ func SetConfigPath(path string) {
 type NodeRole string
 
 const (
-	RoleFilterYear NodeRole = "filter_year"
-	RoleFilterHour NodeRole = "filter_hour"
+	RoleFilterYear   NodeRole = "filter_year"
+	RoleFilterHour   NodeRole = "filter_hour"
+	RoleFilterAmount NodeRole = "filter_amount"
+	RoleGroupByQ2    NodeRole = "q2_group"
+	RoleGroupByQ3    NodeRole = "q3_group"
+	RoleGroupByQ4    NodeRole = "q4_group"
+	RoleAggregateQ2  NodeRole = "q2_aggregate"
+	RoleAggregateQ3  NodeRole = "q3_aggregate"
+	RoleAggregateQ4  NodeRole = "q4_aggregate"
+	RoleJoinerQ2     NodeRole = "q2_join"
+	RoleJoinerQ3     NodeRole = "q3_join"
+	RoleJoinerQ4U    NodeRole = "q4_join_users"
+	RoleJoinerQ4S    NodeRole = "q4_join_stores"
 )
 
 type Binding struct {
@@ -143,36 +171,129 @@ type OutputRoute struct {
 	RoutingKey string
 }
 
-const (
-	// Exchanges
-	InputExchange            = "transactions_and_transaction_items_exchange"
-	TransactionsExchange     = "transactions_exchange"
-	TransactionItemsExchange = "transaction_items_exchange"
-)
-
 type NodeWiring struct {
 	Role         NodeRole
 	NodeID       string
 	QueueName    string                               // se calcula role.nodeID
 	Bindings     []Binding                            // de dónde leo
 	Outputs      map[protocol.DatasetType]OutputRoute // a dónde publico por dataset
-	DeclareExchs []string                             // exchanges a declarar (durable)
+	DeclareExchs []string                             // exchanges a declarar
 }
 
-func BuildWiringForFilterYear(role NodeRole, nodeID string) *NodeWiring {
+// JSON configuration for node wiring
+type WiringConfig struct {
+	Role             string                 `json:"role"`
+	InputQueueName   string                 `json:"input_queue_name"`
+	Bindings         []Binding              `json:"bindings"`
+	Outputs          map[string]OutputRoute `json:"outputs"`
+	DeclareExchanges []string               `json:"declare_exchanges"`
+}
+
+// creates NodeWiring from JSON configuration
+func BuildWiringFromConfig(configPath string, nodeID string) (*NodeWiring, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("error reading wiring config file %s: %v", configPath, err)
+	}
+
+	var config WiringConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("error parsing wiring config JSON: %v", err)
+	}
+
+	outputs := make(map[protocol.DatasetType]OutputRoute)
+	for datasetTypeStr, route := range config.Outputs {
+		datasetType := getDatasetTypeFromString(datasetTypeStr)
+		outputs[datasetType] = route
+	}
+
+	queueName := config.InputQueueName
+	if queueName == "" {
+		queueName = config.Role + "." + nodeID
+	}
+
+	// Special handling for Q4 User Joiner: generate dynamic routing key based on NODE_ID
+	bindings := config.Bindings
+	if config.Role == "q4_join_users" {
+		partition := NodeIDToPartition(nodeID)
+		if partition != -1 {
+			// Update bindings with dynamic routing keys
+			// For each binding, set appropriate routing key based on exchange
+			updatedBindings := make([]Binding, len(bindings))
+			for i, binding := range bindings {
+				updatedBindings[i] = binding
+				// Set routing key based on which exchange this binding is for
+				switch binding.Exchange {
+				case "users_exchange":
+					// For users_exchange: joiner.{partition}.users
+					updatedBindings[i].RoutingKey = fmt.Sprintf("joiner.%d.users", partition)
+					log.Printf("action: build_wiring | role: %s | node_id: %s | partition: %d | exchange: %s | routing_key: %s",
+						config.Role, nodeID, partition, binding.Exchange, updatedBindings[i].RoutingKey)
+				case "q4_aggregated_exchange":
+					// For q4_aggregated_exchange: joiner.{partition}.q4_agg
+					updatedBindings[i].RoutingKey = BuildQ4UserJoinerRoutingKey(partition)
+					log.Printf("action: build_wiring | role: %s | node_id: %s | partition: %d | exchange: %s | routing_key: %s",
+						config.Role, nodeID, partition, binding.Exchange, updatedBindings[i].RoutingKey)
+				default:
+					// Keep original routing key for other exchanges
+					log.Printf("action: build_wiring | role: %s | node_id: %s | partition: %d | exchange: %s | routing_key: %s (unchanged)",
+						config.Role, nodeID, partition, binding.Exchange, updatedBindings[i].RoutingKey)
+				}
+			}
+			bindings = updatedBindings
+		} else {
+			log.Printf("action: build_wiring | role: %s | node_id: %s | result: fail | error: invalid NODE_ID for partition",
+				config.Role, nodeID)
+		}
+	}
+
 	return &NodeWiring{
-		Role:      role,
-		NodeID:    nodeID,
-		QueueName: string(role) + "." + nodeID, // e.g. "filter_year.01"
-		Bindings: []Binding{
-			{Exchange: InputExchange, RoutingKey: ""},
-		},
-		Outputs: map[protocol.DatasetType]OutputRoute{
-			protocol.DatasetTypeTransactions:     {Exchange: TransactionsExchange, RoutingKey: ""},
-			protocol.DatasetTypeTransactionItems: {Exchange: TransactionItemsExchange, RoutingKey: ""},
-		},
-		DeclareExchs: []string{
-			InputExchange, TransactionsExchange, TransactionItemsExchange,
-		},
+		Role:         NodeRole(config.Role),
+		NodeID:       nodeID,
+		QueueName:    queueName,
+		Bindings:     bindings,
+		Outputs:      outputs,
+		DeclareExchs: config.DeclareExchanges,
+	}, nil
+}
+
+// getDatasetTypeFromString converts string to DatasetType
+func getDatasetTypeFromString(datasetTypeStr string) protocol.DatasetType {
+	switch datasetTypeStr {
+	case "TRANSACTIONS":
+		return protocol.DatasetTypeTransactions
+	case "TRANSACTION_ITEMS":
+		return protocol.DatasetTypeTransactionItems
+	case "MENU_ITEMS":
+		return protocol.DatasetTypeMenuItems
+	case "STORES":
+		return protocol.DatasetTypeStores
+	case "USERS":
+		return protocol.DatasetTypeUsers
+	case "Q1":
+		return protocol.DatasetTypeQ1
+	case "Q2Groups":
+		return protocol.DatasetTypeQ2Groups
+	case "Q2Agg":
+		return protocol.DatasetTypeQ2Agg
+	case "Q2AggWithName":
+		return protocol.DatasetTypeQ2AggWithName
+	case "Q3Groups":
+		return protocol.DatasetTypeQ3Groups
+	case "Q3Agg":
+		return protocol.DatasetTypeQ3Agg
+	case "Q3AggWithName":
+		return protocol.DatasetTypeQ3AggWithName
+	case "Q4Groups":
+		return protocol.DatasetTypeQ4Groups
+	case "Q4Agg":
+		return protocol.DatasetTypeQ4Agg
+	case "Q4AggWithUser":
+		return protocol.DatasetTypeQ4AggWithUser
+	case "Q4AggWithUserAndStore":
+		return protocol.DatasetTypeQ4AggWithUserAndStore
+	default:
+		log.Printf("action: convert_dataset_type | result: warning | unknown_type: %s", datasetTypeStr)
+		return protocol.DatasetTypeTransactions
 	}
 }

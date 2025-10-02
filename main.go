@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -9,7 +10,6 @@ import (
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node"
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/handlers"
 )
 
 func main() {
@@ -19,17 +19,14 @@ func main() {
 	cfg := common.GetConfig()
 	nodeConfig := cfg.GetNodeConfig()
 
-	// Create wiring based on the node role
-	var wiring *common.NodeWiring
-	switch nodeConfig.Role {
-	case common.RoleFilterYear:
-		wiring = common.BuildWiringForFilterYear(nodeConfig.Role, nodeConfig.NodeID)
-	default:
-		// Default to filter year if role not specified
-		wiring = common.BuildWiringForFilterYear(common.RoleFilterYear, nodeConfig.NodeID)
+	configPath := fmt.Sprintf("/app/config/%s.json", string(nodeConfig.Role))
+	wiring, err := common.BuildWiringFromConfig(configPath, nodeConfig.NodeID)
+	if err != nil {
+		log.Printf("action: load_wiring_config | result: fail | error: %v", err)
+		return
 	}
 
-	handler := handlers.NewTransactionFilterHandler()
+	handler := node.NewHandler(nodeConfig.Role)
 	// Create filter node
 	node := node.NewNode(handler, middleware.NewQueueManagerWithWiring(wiring))
 
@@ -58,5 +55,3 @@ func initializeLog() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("")
 }
-
-

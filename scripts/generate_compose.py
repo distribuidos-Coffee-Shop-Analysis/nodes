@@ -9,6 +9,7 @@ COMMON_ENV = [
     "RABBITMQ_PASSWORD=admin",
 ]
 
+
 def parse_pairs(pairs):
     out = {}
     for p in pairs:
@@ -18,17 +19,18 @@ def parse_pairs(pairs):
         out[t.strip()] = int(n.strip())
     return out
 
+
 def role_from_type(node_type: str) -> str:
     mapping = {
         "filter-node-year": "filter_year",
         "filter-node-hour": "filter_hour",
-        "filter-node-tx-amount": "q1_amount",
+        "filter-node-amount": "filter_amount",
         "group-by-node-q2": "q2_group",
         "group-by-node-q3": "q3_group",
         "group-by-node-q4": "q4_group",
-        "aggregate-node-q2": "q2_reduce",
-        "aggregate-node-q3": "q3_reduce",
-        "aggregate-node-q4": "q4_reduce",
+        "aggregate-node-q2": "q2_aggregate",
+        "aggregate-node-q3": "q3_aggregate",
+        "aggregate-node-q4": "q4_aggregate",
         "joiner-node-q2": "q2_join",
         "joiner-node-q3": "q3_join",
         "joiner-node-q4-users": "q4_join_users",
@@ -36,12 +38,13 @@ def role_from_type(node_type: str) -> str:
     }
     return mapping.get(node_type, node_type)
 
+
 def make_service_name(node_type: str, idx: int) -> str:
-    return f"{node_type}-{idx:02d}"
+    return f"{node_type}-{idx}"
+
 
 def generate_compose(output_file, type_counts):
     compose = {
-        "version": "3.8",
         "services": {},
         "networks": {
             "coffee_net": {
@@ -57,25 +60,34 @@ def generate_compose(output_file, type_counts):
             svc_name = make_service_name(node_type, i)
             env = list(COMMON_ENV) + [
                 f"NODE_ROLE={role}",
-                f"NODE_ID={i:02d}",
+                f"NODE_ID={i}",
             ]
             service = {
+                "container_name": svc_name,
                 "build": ".",
                 "environment": env,
                 "networks": ["coffee_net"],
+                "volumes": [f"./config/{role}.json:/app/config/{role}.json:ro"],
             }
             compose["services"][svc_name] = service
 
     with open(output_file, "w") as f:
         yaml.dump(compose, f, sort_keys=False)
 
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Uso: python3 generate_compose_nodes.py <output_file> <tipo=cantidad> [<tipo=cantidad> ...]")
+        print(
+            "Uso: python3 generate_compose_nodes.py <output_file> <tipo=cantidad> [<tipo=cantidad> ...]"
+        )
         sys.exit(1)
 
     output_file = sys.argv[1]
     type_counts = parse_pairs(sys.argv[2:])
     generate_compose(output_file, type_counts)
 
-# ./scripts/generate_compose.py docker-compose.yml filter-node-year=3 filter-node-hour=3
+# ./generar_compose.sh docker-compose.yml filter-node-year=4 filter-node-hour=4 filter-node-amount=4 group-by-node-q2=4 group-by-node-q3=4 aggregate-node-q2=1 aggregate-node-q3=1 joiner-node-q2=1 joiner-node-q3=1
+
+# group-by-node-q4=4 aggregate-node-q4=1 joiner-node-q4-users=1 joiner-node-q4-stores=1
+
+# ./generar_compose.sh docker-compose.yml filter-node-year=4 filter-node-hour=4 filter-node-amount=4 group-by-node-q2=4 group-by-node-q3=4 group-by-node-q4=4 aggregate-node-q2=1 aggregate-node-q3=1 aggregate-node-q4=1 joiner-node-q2=1 joiner-node-q3=1 joiner-node-q4-users=1 joiner-node-q4-stores=1

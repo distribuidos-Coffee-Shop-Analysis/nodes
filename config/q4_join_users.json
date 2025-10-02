@@ -1,0 +1,24 @@
+{
+  "role": "q4_join_users",
+  "bindings": [
+    {
+      "exchange": "q4_aggregated_exchange",
+      "routing_key": ""
+    },
+    {
+      "exchange": "users_exchange",
+      "routing_key": ""
+    }
+  ],
+  "outputs": {
+    "Q4AggWithUser": {
+      "exchange": "q4_joined_users_exchange",
+      "routing_key": ""
+    }
+  },
+  "declare_exchanges": [
+    "q4_aggregated_exchange",
+    "users_exchange",
+    "q4_joined_users_exchange"
+  ]
+}

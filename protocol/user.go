@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"fmt"
-	"strings"
 )
 
 // UserRecord represents user record: user_id, gender, birthdate, registered_at
@@ -23,12 +22,6 @@ func (u *UserRecord) Serialize() string {
 // GetType returns the dataset type for user records
 func (u *UserRecord) GetType() DatasetType {
 	return DatasetTypeUsers
-}
-
-// NewUserRecordFromString creates a UserRecord from a string
-func NewUserRecordFromString(data string) (*UserRecord, error) {
-	parts := strings.Split(data, "|")
-	return NewUserRecordFromParts(parts)
 }
 
 // NewUserRecordFromParts creates a UserRecord from string parts

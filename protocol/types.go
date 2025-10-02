@@ -16,11 +16,20 @@ const (
 	DatasetTypeTransactions
 	DatasetTypeUsers
 
-	// Query types
-	DatasetTypeQ1 DatasetType = iota + 5
-	DatasetTypeQ2
-	DatasetTypeQ3
-	DatasetTypeQ4
+	DatasetTypeQ1 // creo q igual a transactions
+
+	DatasetTypeQ2Groups // group Q2
+	DatasetTypeQ2Agg // agg Q2
+	DatasetTypeQ2AggWithName // join Q2
+
+	DatasetTypeQ3Groups // group Q3
+	DatasetTypeQ3Agg // agg Q3
+	DatasetTypeQ3AggWithName // join Q3
+
+	DatasetTypeQ4Groups // group Q4
+	DatasetTypeQ4Agg // agg Q4
+	DatasetTypeQ4AggWithUser // join Q4 user
+	DatasetTypeQ4AggWithUserAndStore // join Q4 store
 )
 
 // String returns string representation of DatasetType
@@ -38,12 +47,26 @@ func (dt DatasetType) String() string {
 		return "USERS"
 	case DatasetTypeQ1:
 		return "Q1"
-	case DatasetTypeQ2:
-		return "Q2"
-	case DatasetTypeQ3:
-		return "Q3"
-	case DatasetTypeQ4:
-		return "Q4"
+	case DatasetTypeQ2Groups:
+		return "Q2Groups"
+	case DatasetTypeQ2Agg:
+		return "Q2Agg"
+	case DatasetTypeQ2AggWithName:
+		return "Q2AggWithName"
+	case DatasetTypeQ3Groups:
+		return "Q3Groups"
+	case DatasetTypeQ3Agg:
+		return "Q3Agg"
+	case DatasetTypeQ3AggWithName:
+		return "Q3AggWithName"
+	case DatasetTypeQ4Groups:
+		return "Q4Groups"
+	case DatasetTypeQ4Agg:
+		return "Q4Agg"
+	case DatasetTypeQ4AggWithUser:
+		return "Q4AggWithUser"
+	case DatasetTypeQ4AggWithUserAndStore:
+		return "Q4AggWithUserAndStore"
 	default:
 		return "UNKNOWN"
 	}

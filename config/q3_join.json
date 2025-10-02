@@ -1,0 +1,24 @@
+{
+  "role": "q3_join",
+  "bindings": [
+    {
+      "exchange": "q3_aggregated_exchange",
+      "routing_key": ""
+    },
+    {
+      "exchange": "stores_exchange",
+      "routing_key": ""
+    }
+  ],
+  "outputs": {
+    "Q3AggWithName": {
+      "exchange": "replies_exchange",
+      "routing_key": ""
+    }
+  },
+  "declare_exchanges": [
+    "q3_aggregated_exchange",
+    "stores_exchange",
+    "replies_exchange"
+  ]
+}

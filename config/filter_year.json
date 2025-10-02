@@ -1,0 +1,25 @@
+{
+  "role": "filter_year",
+  "input_queue_name": "transactions_and_transactionItems_queue",
+  "bindings": [
+    {
+      "exchange": "transactions_and_transaction_items_exchange",
+      "routing_key": ""
+    }
+  ],
+  "outputs": {
+    "TRANSACTIONS": {
+      "exchange": "transactions_exchange",
+      "routing_key": ""
+    },
+    "TRANSACTION_ITEMS": {
+      "exchange": "transaction_items_exchange", 
+      "routing_key": ""
+    }
+  },
+  "declare_exchanges": [
+    "transactions_and_transaction_items_exchange",
+    "transactions_exchange",
+    "transaction_items_exchange"
+  ]
+}

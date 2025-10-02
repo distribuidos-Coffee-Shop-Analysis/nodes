@@ -110,8 +110,7 @@ func separateQ2Records(records []protocol.Record, datasetType protocol.DatasetTy
 
 // GetJoinerPartition calculates the joiner partition for a given user_id using consistent hashing.
 //
-// This ensures that the same user_id always maps to the same joiner node,
-// which is critical for distributed join operations.
+// This ensures that the same user_id always maps to the same joiner node
 //
 // Args:
 //   - userID: The user ID to hash (string)

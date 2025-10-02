@@ -112,6 +112,12 @@ func (c *Config) GetLoggingLevel() string {
 	return section.Key("LOGGING_LEVEL").MustString("INFO")
 }
 
+// GetQ4JoinersCount returns the number of Q4 joiner nodes for partitioning
+func (c *Config) GetQ4JoinersCount() int {
+	section := c.cfg.Section("DEFAULT")
+	return section.Key("Q4_JOINERS_COUNT").MustInt(1)
+}
+
 // GetConfig returns the global configuration instance (singleton pattern)
 func GetConfig() *Config {
 	configOnce.Do(func() {

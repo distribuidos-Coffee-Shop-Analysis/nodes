@@ -117,7 +117,7 @@ func separateQ2Records(records []protocol.Record, datasetType protocol.DatasetTy
 //   - joinersCount: Total number of joiner nodes
 //
 // Returns:
-//   - int: The partition number (0 to joinersCount-1)
+//   - int: The partition number (1 to joinersCount) - 1-based indexing
 func GetJoinerPartition(userID string, joinersCount int) int {
 	// Create SHA256 hash (same as Python implementation in connection-node)
 	hash := sha256.Sum256([]byte(userID))
@@ -131,5 +131,26 @@ func GetJoinerPartition(userID string, joinersCount int) int {
 	joinersCountBig := big.NewInt(int64(joinersCount))
 	partition := new(big.Int).Mod(hashInt, joinersCountBig)
 
-	return int(partition.Int64())
+	// Return 1-based partition (1 to joinersCount)
+	return int(partition.Int64()) + 1
+}
+
+// NodeIDToPartition converts NODE_ID string to partition number (int)
+// Both NODE_ID and partitions are 1-based
+// Example: "1" -> 1, "2" -> 2, "3" -> 3
+// Returns -1 and err if conversion fails or if nodeID < 1
+func NodeIDToPartition(nodeID string) (int, error) {
+	var nodeNum int
+	_, err := fmt.Sscanf(nodeID, "%d", &nodeNum)
+	if err != nil || nodeNum < 1 {
+		return -1, err
+	}
+	return nodeNum, nil
+}
+
+// BuildQ4UserJoinerRoutingKey builds the routing key for Q4 User Joiner based on partition
+// Format: "joiner.{partition}.q4_agg"
+// Example: partition 1 -> "joiner.1.q4_agg", partition 2 -> "joiner.2.q4_agg"
+func BuildQ4UserJoinerRoutingKey(partition int) string {
+	return fmt.Sprintf("joiner.%d.q4_agg", partition)
 }

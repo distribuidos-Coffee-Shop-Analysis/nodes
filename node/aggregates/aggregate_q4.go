@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
@@ -146,4 +147,55 @@ func (q *Q4Aggregate) Finalize() ([]protocol.Record, error) {
 	log.Printf("action: q4_finalize_complete | total_results: %d", len(results))
 
 	return results, nil
+}
+
+// GetBatchesToPublish returns batches partitioned by user_id for distributed join
+// Implements the RecordAggregate interface
+func (q *Q4Aggregate) GetBatchesToPublish(batchIndex int) ([]BatchToPublish, error) {
+
+	cfg := common.GetConfig()
+	joinersCount := cfg.GetQ4JoinersCount()
+
+	results, err := q.Finalize()
+	if err != nil {
+		return nil, err
+	}
+
+
+	partitionedRecords := make(map[int][]protocol.Record)
+
+	for _, record := range results {
+		q4Record, ok := record.(*protocol.Q4AggregatedRecord)
+		if !ok {
+			return nil, fmt.Errorf("expected Q4AggregatedRecord, got %T", record)
+		}
+
+		partition := common.GetJoinerPartition(q4Record.UserID, joinersCount)
+
+		if partitionedRecords[partition] == nil {
+			partitionedRecords[partition] = make([]protocol.Record, 0)
+		}
+		partitionedRecords[partition] = append(partitionedRecords[partition], record)
+	}
+
+	log.Printf("action: q4_partitioned_results | partitions: %d | total_records: %d",
+		len(partitionedRecords), len(results))
+
+	var batchesToPublish []BatchToPublish
+
+	for partition, records := range partitionedRecords {
+		routingKey := fmt.Sprintf("joiner.%d.q4_agg", partition)
+
+		batch := protocol.NewAggregateBatch(batchIndex, records, true)
+
+		batchesToPublish = append(batchesToPublish, BatchToPublish{
+			Batch:      batch,
+			RoutingKey: routingKey,
+		})
+
+		log.Printf("action: q4_create_batch_to_publish | partition: %d | routing_key: %s | records: %d",
+			partition, routingKey, len(records))
+	}
+
+	return batchesToPublish, nil
 }

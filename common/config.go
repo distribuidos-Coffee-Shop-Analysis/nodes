@@ -217,16 +217,28 @@ func BuildWiringFromConfig(configPath string, nodeID string) (*NodeWiring, error
 	if config.Role == "q4_join_users" {
 		partition := NodeIDToPartition(nodeID)
 		if partition != -1 {
-			// Update bindings with dynamic routing key for Q4 aggregated exchange
-			// NODE_ID "1" -> partition 1 -> routing key "joiner.1.q4_agg"
-			// NODE_ID "2" -> partition 2 -> routing key "joiner.2.q4_agg"
+			// Update bindings with dynamic routing keys
+			// For each binding, set appropriate routing key based on exchange
 			updatedBindings := make([]Binding, len(bindings))
 			for i, binding := range bindings {
 				updatedBindings[i] = binding
-				// Replace empty routing key with partitioned key
-				updatedBindings[i].RoutingKey = BuildQ4UserJoinerRoutingKey(partition)
-				log.Printf("action: build_wiring | role: %s | node_id: %s | partition: %d | routing_key: %s",
-					config.Role, nodeID, partition, updatedBindings[i].RoutingKey)
+				// Set routing key based on which exchange this binding is for
+				switch binding.Exchange {
+				case "users_exchange":
+					// For users_exchange: joiner.{partition}.users
+					updatedBindings[i].RoutingKey = fmt.Sprintf("joiner.%d.users", partition)
+					log.Printf("action: build_wiring | role: %s | node_id: %s | partition: %d | exchange: %s | routing_key: %s",
+						config.Role, nodeID, partition, binding.Exchange, updatedBindings[i].RoutingKey)
+				case "q4_aggregated_exchange":
+					// For q4_aggregated_exchange: joiner.{partition}.q4_agg
+					updatedBindings[i].RoutingKey = BuildQ4UserJoinerRoutingKey(partition)
+					log.Printf("action: build_wiring | role: %s | node_id: %s | partition: %d | exchange: %s | routing_key: %s",
+						config.Role, nodeID, partition, binding.Exchange, updatedBindings[i].RoutingKey)
+				default:
+					// Keep original routing key for other exchanges
+					log.Printf("action: build_wiring | role: %s | node_id: %s | partition: %d | exchange: %s | routing_key: %s (unchanged)",
+						config.Role, nodeID, partition, binding.Exchange, updatedBindings[i].RoutingKey)
+				}
 			}
 			bindings = updatedBindings
 		} else {

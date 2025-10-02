@@ -65,22 +65,20 @@ func (j *Q4StoreJoiner) PerformJoin(userJoinedRecords []protocol.Record) ([]prot
 		// Join with store information
 		storeRecord, exists := j.stores[userJoinedRecord.StoreID]
 		if !exists {
-			log.Printf("action: q4_store_join_warning | store_id: %s | error: store_not_found", userJoinedRecord.StoreID)
 			continue // Skip records without matching stores
 		}
 
-		// Create final record with only store_name and birthdate
+		// Create final record with store_name, purchases_qty, and birthdate
 		finalRecord := &protocol.Q4JoinedWithStoreAndUserRecord{
-			StoreName: storeRecord.StoreName,
-			Birthdate: userJoinedRecord.Birthdate,
+			StoreName:    storeRecord.StoreName,
+			PurchasesQty: userJoinedRecord.PurchasesQty,
+			Birthdate:    userJoinedRecord.Birthdate,
 		}
 		joinedRecords = append(joinedRecords, finalRecord)
-
-		log.Printf("action: q4_store_join_success | store_id: %s | store_name: %s | birthdate: %s",
-			userJoinedRecord.StoreID, storeRecord.StoreName, userJoinedRecord.Birthdate)
 	}
 
-	log.Printf("action: q4_store_join_complete | total_joined: %d", len(joinedRecords))
+	log.Printf("action: q4_store_join_complete | input: %d | joined: %d",
+		len(userJoinedRecords), len(joinedRecords))
 
 	return joinedRecords, nil
 }

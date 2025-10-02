@@ -218,17 +218,15 @@ func BuildWiringFromConfig(configPath string, nodeID string) (*NodeWiring, error
 		partition := NodeIDToPartition(nodeID)
 		if partition != -1 {
 			// Update bindings with dynamic routing key for Q4 aggregated exchange
-			// NODE_ID "01" -> partition 1 -> routing key "joiner.1.q4_agg"
-			// NODE_ID "02" -> partition 2 -> routing key "joiner.2.q4_agg"
+			// NODE_ID "1" -> partition 1 -> routing key "joiner.1.q4_agg"
+			// NODE_ID "2" -> partition 2 -> routing key "joiner.2.q4_agg"
 			updatedBindings := make([]Binding, len(bindings))
 			for i, binding := range bindings {
 				updatedBindings[i] = binding
-				// Replace empty routing key for q4_aggregated_exchange with partitioned key
-				if binding.Exchange == "q4_aggregated_exchange" && binding.RoutingKey == "" {
-					updatedBindings[i].RoutingKey = BuildQ4UserJoinerRoutingKey(partition)
-					log.Printf("action: build_wiring | role: %s | node_id: %s | partition: %d | routing_key: %s",
-						config.Role, nodeID, partition, updatedBindings[i].RoutingKey)
-				}
+				// Replace empty routing key with partitioned key
+				updatedBindings[i].RoutingKey = BuildQ4UserJoinerRoutingKey(partition)
+				log.Printf("action: build_wiring | role: %s | node_id: %s | partition: %d | routing_key: %s",
+					config.Role, nodeID, partition, updatedBindings[i].RoutingKey)
 			}
 			bindings = updatedBindings
 		} else {

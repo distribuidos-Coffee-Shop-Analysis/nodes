@@ -55,6 +55,13 @@ func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 			return fmt.Errorf("expected Q4GroupedRecord, got %T", record)
 		}
 
+		// Skip records with invalid UserID or StoreID
+		if q4Grouped.UserID == "" || q4Grouped.StoreID == "" {
+			log.Printf("action: q4_skip_invalid_record | user_id: '%s' | store_id: '%s'",
+				q4Grouped.UserID, q4Grouped.StoreID)
+			continue
+		}
+
 		// Parse transaction count from string
 		transactionCount, err := strconv.Atoi(q4Grouped.TransactionCount)
 		if err != nil {
@@ -104,14 +111,12 @@ func (a *Q4Aggregate) GetAccumulatedBatchCount() int {
 	return int(a.uniqueBatchCount.Load())
 }
 
-// Finalize generates the top 3 customers per store.
-// Returns all customers with purchase counts that are in the top 3 distinct purchase counts.
 func (q *Q4Aggregate) Finalize() ([]protocol.Record, error) {
 	log.Printf("action: q4_finalize_start | stores: %d", len(q.storeUserCounts))
 
 	var results []protocol.Record
 
-	// For each store, get customers with top 3 distinct purchase counts
+	// For each store, get top 3 customers
 	for storeId, userCounts := range q.storeUserCounts {
 		// Create slice of customers for this store
 		type Customer struct {
@@ -121,6 +126,12 @@ func (q *Q4Aggregate) Finalize() ([]protocol.Record, error) {
 
 		var customers []Customer
 		for userId, count := range userCounts {
+			// Skip users with empty/invalid ID as a safety check
+			if userId == "" {
+				log.Printf("action: q4_skip_empty_user | store_id: %s", storeId)
+				continue
+			}
+
 			customers = append(customers, Customer{
 				UserId:           userId,
 				TransactionCount: count,
@@ -132,38 +143,20 @@ func (q *Q4Aggregate) Finalize() ([]protocol.Record, error) {
 			return customers[i].TransactionCount > customers[j].TransactionCount
 		})
 
-		// Find the top 3 distinct purchase counts
-		distinctCounts := make(map[int]bool)
-		topCounts := make([]int, 0, 3)
-
-		for _, customer := range customers {
-			if !distinctCounts[customer.TransactionCount] {
-				distinctCounts[customer.TransactionCount] = true
-				topCounts = append(topCounts, customer.TransactionCount)
-				if len(topCounts) == 3 {
-					break
-				}
-			}
+		// Take top 3
+		top3Count := len(customers)
+		if top3Count > 3 {
+			top3Count = 3
 		}
 
-		// Get all customers whose purchase count is in the top 3 distinct counts
-		topCountsMap := make(map[int]bool)
-		for _, count := range topCounts {
-			topCountsMap[count] = true
-		}
-
-		for _, customer := range customers {
-			if topCountsMap[customer.TransactionCount] {
-				q4Agg := &protocol.Q4AggregatedRecord{
-					StoreID:      storeId,
-					UserID:       customer.UserId,
-					PurchasesQty: strconv.Itoa(customer.TransactionCount),
-				}
-				results = append(results, q4Agg)
-
-				log.Printf("action: q4_top_customer | store: %s | user: %s | transactions: %d",
-					storeId, customer.UserId, customer.TransactionCount)
+		for i := 0; i < top3Count; i++ {
+			customer := customers[i]
+			q4Agg := &protocol.Q4AggregatedRecord{
+				StoreID:      storeId,
+				UserID:       customer.UserId,
+				PurchasesQty: strconv.Itoa(customer.TransactionCount),
 			}
+			results = append(results, q4Agg)
 		}
 	}
 

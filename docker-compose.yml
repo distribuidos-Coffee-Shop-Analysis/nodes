@@ -419,6 +419,62 @@ services:
     - coffee_net
     volumes:
     - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+  joiner-node-q4-users-2:
+    container_name: joiner-node-q4-users-2
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_users
+    - NODE_ID=2
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+  joiner-node-q4-users-3:
+    container_name: joiner-node-q4-users-3
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_users
+    - NODE_ID=3
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+  joiner-node-q4-users-4:
+    container_name: joiner-node-q4-users-4
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_users
+    - NODE_ID=4
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+  joiner-node-q4-users-5:
+    container_name: joiner-node-q4-users-5
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_join_users
+    - NODE_ID=5
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
   joiner-node-q4-stores-1:
     container_name: joiner-node-q4-stores-1
     build: .

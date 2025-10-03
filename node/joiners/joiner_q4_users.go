@@ -79,6 +79,8 @@ func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record) ([]proto
 		// Join aggregated data with user information (lookup birthdate)
 		birthdate, exists := j.users[normalizedUserID]
 		if !exists {
+			log.Printf("action: q4_user_join_missing | user_id: %s | store_id: %s",
+				normalizedUserID, aggRecord.StoreID)
 			continue // Skip records without matching users
 		}
 

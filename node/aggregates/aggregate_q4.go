@@ -185,7 +185,10 @@ func (q *Q4Aggregate) GetBatchesToPublish(batchIndex int) ([]BatchToPublish, err
 			return nil, fmt.Errorf("expected Q4AggregatedRecord, got %T", record)
 		}
 
-		partition := common.GetJoinerPartition(q4Record.UserID, joinersCount)
+		// Normalize UserID to remove ".0" suffix for consistent hashing
+		normalizedUserID := common.NormalizeUserID(q4Record.UserID)
+
+		partition := common.GetJoinerPartition(normalizedUserID, joinersCount)
 
 		if partitionedRecords[partition] == nil {
 			partitionedRecords[partition] = make([]protocol.Record, 0)

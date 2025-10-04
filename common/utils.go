@@ -154,3 +154,33 @@ func NodeIDToPartition(nodeID string) int {
 func BuildQ4UserJoinerRoutingKey(partition int) string {
 	return fmt.Sprintf("joiner.%d.q4_agg", partition)
 }
+
+// NormalizeUserID removes trailing ".0" from user_id if present and trims whitespace
+// This handles cases where user_id might come as "14202.0" instead of "14202"
+// ensuring consistency between transaction user_ids (floats) and user table user_ids (ints)
+func NormalizeUserID(userID string) string {
+	userID = trimSpace(userID)
+	// If user_id ends with ".0", remove it
+	if len(userID) > 2 && userID[len(userID)-2:] == ".0" {
+		return userID[:len(userID)-2]
+	}
+	return userID
+}
+
+// trimSpace removes leading and trailing whitespace from a string
+func trimSpace(s string) string {
+	start := 0
+	end := len(s)
+
+	// Trim leading whitespace
+	for start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
+		start++
+	}
+
+	// Trim trailing whitespace
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
+		end--
+	}
+
+	return s[start:end]
+}

@@ -5,8 +5,6 @@ import (
 	"log"
 	"strconv"
 	"sync"
-	"sync/atomic"
-
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
@@ -17,17 +15,12 @@ type Q3Aggregate struct {
 	// Map to accumulate TPV by year_half + store_id
 	tpvData map[string]float64 // year_half|store_id -> accumulated tpv
 
-	// Track unique batch indices
-	seenBatchIndices map[int]bool // track which batch indices we've seen
-	uniqueBatchCount atomic.Int32 // count of unique batch indices
 }
 
 // NewQ3Aggregate creates a new Q3 aggregate processor
 func NewQ3Aggregate() *Q3Aggregate {
 	return &Q3Aggregate{
 		tpvData:         make(map[string]float64),
-		seenBatchIndices: make(map[int]bool),
-		uniqueBatchCount: atomic.Int32{},
 	}
 }
 
@@ -37,9 +30,6 @@ func (a *Q3Aggregate) Name() string {
 
 // AccumulateBatch processes and accumulates a batch of Q3 grouped records
 func (a *Q3Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int) error {
-	// Only count as one batch per batchIndex
-	// We'll track seen batch indices to avoid double counting
-	a.trackBatchIndex(batchIndex)
 
 	// Process records locally without lock (no shared state access)
 	localTPV := make(map[string]float64)
@@ -114,21 +104,6 @@ func (a *Q3Aggregate) Finalize() ([]protocol.Record, error) {
 	log.Printf("action: q3_aggregate_finalize_complete | total_results: %d", len(result))
 
 	return result, nil
-}
-
-// GetAccumulatedBatchCount returns the number of batches received so far
-func (a *Q3Aggregate) GetAccumulatedBatchCount() int {
-	return int(a.uniqueBatchCount.Load())
-}
-
-func (a *Q3Aggregate) trackBatchIndex(batchIndex int) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if !a.seenBatchIndices[batchIndex] {
-		a.seenBatchIndices[batchIndex] = true
-		a.uniqueBatchCount.Add(1)
-	}
 }
 
 // GetBatchesToPublish returns a single batch with all aggregated results

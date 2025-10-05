@@ -19,9 +19,6 @@ type RecordAggregate interface {
 	// This is called when EOF is received and all batches have been processed
 	Finalize() ([]protocol.Record, error)
 
-	// GetAccumulatedBatchCount returns the count of batches that have been accumulated so far
-	GetAccumulatedBatchCount() int
-
 	// Name returns the name of the aggregate for logging
 	Name() string
 

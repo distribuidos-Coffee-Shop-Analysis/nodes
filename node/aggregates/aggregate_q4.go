@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strconv"
 	"sync"
-	"sync/atomic"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
@@ -20,17 +19,12 @@ type Q4Aggregate struct {
 
 	// Map from store_id to map[user_id]transaction_count
 	storeUserCounts map[string]map[string]int
-	// Track unique batch indices
-	seenBatchIndices map[int]bool // track which batch indices we've seen
-	uniqueBatchCount atomic.Int32 // count of unique batch indices
 }
 
 // NewQ4Aggregate creates a new Q4Aggregate instance.
 func NewQ4Aggregate() *Q4Aggregate {
 	return &Q4Aggregate{
-		storeUserCounts:  make(map[string]map[string]int),
-		seenBatchIndices: make(map[int]bool),
-		uniqueBatchCount: atomic.Int32{},
+		storeUserCounts: make(map[string]map[string]int),
 	}
 }
 
@@ -41,9 +35,6 @@ func (q *Q4Aggregate) Name() string {
 
 // AccumulateBatch processes a batch of Q4GroupedRecord.
 func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int) error {
-	// Only count as one batch per batchIndex
-	// We'll track seen batch indices to avoid double counting
-	q.trackBatchIndex(batchIndex)
 
 	// Process records locally without lock, then we merge into shared map
 	// Structure: store_id -> user_id -> transaction_count
@@ -52,7 +43,8 @@ func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 	for _, record := range records {
 		q4Grouped, ok := record.(*protocol.Q4GroupedRecord)
 		if !ok {
-			return fmt.Errorf("expected Q4GroupedRecord, got %T", record)
+			log.Printf("action: q4_invalid_record_type | expected: Q4GroupedRecord | got: %T", record)
+			continue // Skip invalid record types
 		}
 
 		// Skip records with invalid UserID or StoreID
@@ -65,7 +57,9 @@ func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 		// Parse transaction count from string
 		transactionCount, err := strconv.Atoi(q4Grouped.TransactionCount)
 		if err != nil {
-			return fmt.Errorf("invalid transaction count '%s': %w", q4Grouped.TransactionCount, err)
+			log.Printf("action: q4_invalid_transaction_count | user_id: %s | store_id: %s | transaction_count: %s",
+				q4Grouped.UserID, q4Grouped.StoreID, q4Grouped.TransactionCount)
+			continue // Skip invalid counts
 		}
 
 		// Initialize store map if needed (in local map)
@@ -75,6 +69,11 @@ func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 
 		// Accumulate transaction count in local map
 		localStoreUserCounts[q4Grouped.StoreID][q4Grouped.UserID] += transactionCount
+	}
+
+	// Empty batches are valid - just skip the merge
+	if len(localStoreUserCounts) == 0 {
+		return nil
 	}
 
 	// Only lock for the final merge into shared map
@@ -94,21 +93,6 @@ func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 	}
 
 	return nil
-}
-
-func (a *Q4Aggregate) trackBatchIndex(batchIndex int) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if !a.seenBatchIndices[batchIndex] {
-		a.seenBatchIndices[batchIndex] = true
-		a.uniqueBatchCount.Add(1)
-	}
-}
-
-// GetAccumulatedBatchCount returns the number of batches received so far
-func (a *Q4Aggregate) GetAccumulatedBatchCount() int {
-	return int(a.uniqueBatchCount.Load())
 }
 
 func (q *Q4Aggregate) Finalize() ([]protocol.Record, error) {

@@ -5,7 +5,6 @@ import (
 	"log"
 	"strconv"
 	"sync"
-	"sync/atomic"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
@@ -17,19 +16,13 @@ type Q2Aggregate struct {
 	// Maps to accumulate data by year_month + item_id
 	quantityData map[string]int     // year_month|item_id -> total quantity
 	profitData   map[string]float64 // year_month|item_id -> total profit
-
-	// Track unique batch indices (Q2 has dual datasets but same batch index)
-	seenBatchIndices map[int]bool // track which batch indices we've seen
-	uniqueBatchCount atomic.Int32 // count of unique batch indices
 }
 
 // NewQ2Aggregate creates a new Q2 aggregate processor
 func NewQ2Aggregate() *Q2Aggregate {
 	return &Q2Aggregate{
-		quantityData:     make(map[string]int),
-		profitData:       make(map[string]float64),
-		seenBatchIndices: make(map[int]bool),
-		uniqueBatchCount: atomic.Int32{},
+		quantityData: make(map[string]int),
+		profitData:   make(map[string]float64),
 	}
 }
 
@@ -39,9 +32,6 @@ func (a *Q2Aggregate) Name() string {
 
 // AccumulateBatch processes and accumulates a batch of Q2 grouped records
 func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int) error {
-	// Only count as one batch per batchIndex (Q2 has dual datasets but same batchIndex)
-	// We'll track seen batch indices to avoid double counting
-	a.trackBatchIndex(batchIndex)
 
 	// Process records locally without lock (no shared state access)
 	localQuantity := make(map[string]int)
@@ -96,16 +86,7 @@ func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 	return nil
 }
 
-// trackBatchIndex tracks unique batch indices to avoid double counting in dual datasets
-func (a *Q2Aggregate) trackBatchIndex(batchIndex int) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if !a.seenBatchIndices[batchIndex] {
-		a.seenBatchIndices[batchIndex] = true
-		a.uniqueBatchCount.Add(1)
-	}
-}
+// trackBatchIndex is no longer needed as we track inline in AccumulateBatch
 
 // Finalize calculates the best selling and most profitable items per year_month
 func (a *Q2Aggregate) Finalize() ([]protocol.Record, error) {
@@ -172,22 +153,6 @@ func (a *Q2Aggregate) Finalize() ([]protocol.Record, error) {
 	return result, nil
 }
 
-// GetAccumulatedBatchCount returns the number of unique batches received so far
-func (a *Q2Aggregate) GetAccumulatedBatchCount() int {
-	return int(a.uniqueBatchCount.Load()) // No lock needed for atomic read
-}
-
-// IsComplete checks if all expected batches have been received
-func (a *Q2Aggregate) IsComplete(maxBatchIndex int) bool {
-	expectedBatches := maxBatchIndex // batch indices are 1-based
-	received := int(a.uniqueBatchCount.Load())
-	isComplete := received == expectedBatches
-
-	log.Printf("action: q2_aggregate_is_complete | received: %d | expected: %d | complete: %v",
-		received, expectedBatches, isComplete)
-
-	return isComplete
-}
 
 // parseAggregateKey splits the composite key "yearMonth|itemID" into parts
 func parseAggregateKey(key string) []string {
@@ -247,7 +212,7 @@ func (a *Q2Aggregate) GetBatchesToPublish(batchIndex int) ([]BatchToPublish, err
 	return []BatchToPublish{
 		{
 			Batch:      batch,
-			RoutingKey: "", 
+			RoutingKey: "",
 		},
 	}, nil
 }

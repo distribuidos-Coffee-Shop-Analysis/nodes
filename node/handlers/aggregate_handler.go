@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
@@ -14,10 +15,13 @@ import (
 
 type AggregateHandler struct {
 	aggregate                aggregates.RecordAggregate
+	mu                       sync.Mutex
 	numberOfBatchesRemaining int
 	eofReceived              bool
-	mu                       sync.Mutex
 	oneTimeFinalize          bool
+	// Track unique batch indices
+	seenBatchIndices map[int]bool // track which batch indices we've seen
+	uniqueBatchCount atomic.Int32 // count of unique batch indices
 }
 
 func NewAggregateHandler(aggregate aggregates.RecordAggregate) *AggregateHandler {
@@ -27,6 +31,8 @@ func NewAggregateHandler(aggregate aggregates.RecordAggregate) *AggregateHandler
 		eofReceived:              false,
 		oneTimeFinalize:          true,
 		mu:                       sync.Mutex{},
+		seenBatchIndices:         make(map[int]bool),
+		uniqueBatchCount:         atomic.Int32{},
 	}
 }
 
@@ -51,30 +57,26 @@ func (h *AggregateHandler) StartHandler(queueManager *middleware.QueueManager, c
 func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
 	wiring *common.NodeWiring, clientWG *sync.WaitGroup, msg amqp091.Delivery) error {
 
-	// Acknowledge the message
-	msg.Ack(false)
-
 	clientWG.Add(1)
 	defer clientWG.Done()
 
-	h.mu.Lock()
-
 	// Accumulate this batch
 	err := h.aggregate.AccumulateBatch(batchMessage.Records, batchMessage.BatchIndex)
+	h.trackBatchIndex(batchMessage.BatchIndex)
 	if err != nil {
 		log.Printf("action: aggregate_accumulate | aggregate: %s | result: fail | error: %v",
 			h.aggregate.Name(), err)
-		h.mu.Unlock()
-		msg.Nack(false, true) // Reject and requeue
+		msg.Ack(false) // Ack to remove empty or bad batches
 		return err
 	}
 
+	h.mu.Lock()
 	// Check if this batch has EOF flag
 	if batchMessage.EOF {
 		// Get the actual count AFTER processing this batch
-		accumulatedCountAfterThisBatch := h.aggregate.GetAccumulatedBatchCount()
-		expectedTotalBatches := batchMessage.BatchIndex
-		h.numberOfBatchesRemaining = expectedTotalBatches - accumulatedCountAfterThisBatch
+		accumulatedCountAfterThisBatch := h.getUniqueBatchCount()
+		expectedTotalBatches := batchMessage.BatchIndex 
+		h.numberOfBatchesRemaining = expectedTotalBatches - int(accumulatedCountAfterThisBatch)
 		h.eofReceived = true
 
 		log.Printf("action: aggregate_eof_received | aggregate: %s | max_batch_index: %d | "+
@@ -91,7 +93,7 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	}
 
 	// Check if we should finalize
-	shouldFinalize := (h.numberOfBatchesRemaining == 0 || h.numberOfBatchesRemaining == -1) && h.eofReceived && h.oneTimeFinalize
+	shouldFinalize := h.numberOfBatchesRemaining == 0 && h.eofReceived && h.oneTimeFinalize
 
 	if shouldFinalize {
 		h.oneTimeFinalize = false // Ensure finalize runs only once
@@ -127,8 +129,11 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 		log.Printf("action: aggregate_publish | aggregate: %s | result: success | batches_published: %d",
 			h.aggregate.Name(), len(batchesToPublish))
 	} else {
-		h.mu.Unlock()
+		h.mu.Unlock() // This unlock is necessary in case we dont have to finalize yet
 	}
+
+	// Acknowledge the message
+	msg.Ack(false)
 
 	return nil
 }
@@ -147,4 +152,16 @@ func (h *AggregateHandler) publishBatches(publisher *middleware.Publisher, batch
 	}
 
 	return nil
+}
+
+func (h *AggregateHandler) trackBatchIndex(batchIndex int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.seenBatchIndices[batchIndex] {
+		h.seenBatchIndices[batchIndex] = true
+		h.uniqueBatchCount.Add(1)
+	}
+}
+func (h *AggregateHandler) getUniqueBatchCount() int32 {
+	return h.uniqueBatchCount.Load()
 }

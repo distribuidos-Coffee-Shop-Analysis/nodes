@@ -54,33 +54,7 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 
 	batchIndex := batchMessage.BatchIndex
 
-	var groupByBatch *protocol.BatchMessage
-	switch h.groupby.Name() {
-	case "q2_groupby_year_month_item":
-		groupByBatch = protocol.NewQ2GroupByBatch(
-			batchIndex,
-			groupedRecords,
-			batchMessage.EOF,
-		)
-	case "q3_groupby_year_half_store":
-		groupByBatch = protocol.NewQ3GroupByBatch(
-			batchIndex,
-			groupedRecords,
-			batchMessage.EOF,
-		)
-	case "q4_groupby_store_user":
-		groupByBatch = protocol.NewQ4GroupByBatch(
-			batchIndex,
-			groupedRecords,
-			batchMessage.EOF,
-		)
-	default:
-		groupByBatch = protocol.NewGroupByBatch(
-			batchIndex,
-			groupedRecords,
-			batchMessage.EOF,
-		)
-	}
+	groupByBatch := h.groupby.NewGroupByBatch(batchIndex, groupedRecords, batchMessage.EOF)
 
 	publisher, err := middleware.NewPublisher(connection, wiring)
 	if err != nil {

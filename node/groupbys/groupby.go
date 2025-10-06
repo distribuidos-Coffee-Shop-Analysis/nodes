@@ -8,4 +8,5 @@ import (
 type RecordGroupBy interface {
 	ProcessBatch(records []protocol.Record, eof bool) ([]protocol.Record, error)
 	Name() string
+	NewGroupByBatch(batchIndex int, records []protocol.Record, eof bool) *protocol.BatchMessage
 }

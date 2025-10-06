@@ -22,7 +22,7 @@ func (g *Q4GroupBy) Name() string {
 	return "q4_groupby_store_user"
 }
 
-// ProcessBatch groups records by StoreID and UserID 
+// ProcessBatch groups records by StoreID and UserID
 func (g *Q4GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protocol.Record, error) {
 	groupCounts := make(map[string]int)
 
@@ -38,30 +38,40 @@ func (g *Q4GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 		}
 
 		key := fmt.Sprintf("%s|%s", transactionRecord.StoreID, transactionRecord.UserID)
-		
+
 		groupCounts[key]++
 	}
 
 	var result []protocol.Record
 	for key, count := range groupCounts {
-	
+
 		parts := splitGroupKey(key)
 		storeID := parts[0]
 		userID := parts[1]
-		
+
 		groupedRecord := &protocol.Q4GroupedRecord{
 			StoreID:          storeID,
 			UserID:           userID,
 			TransactionCount: strconv.Itoa(count),
 		}
-		
+
 		result = append(result, groupedRecord)
-		
+
 	}
 
 	return result, nil
 }
 
+// NewGroupByBatch creates a new batch message for the group by processor
+func (g *Q4GroupBy) NewGroupByBatch(batchIndex int, records []protocol.Record, eof bool) *protocol.BatchMessage {
+	return &protocol.BatchMessage{
+		Type:        protocol.MessageTypeBatch,
+		DatasetType: protocol.DatasetTypeQ4Groups,
+		BatchIndex:  batchIndex,
+		Records:     records,
+		EOF:         eof,
+	}
+}
 
 // splitGroupKey splits the composite key "storeID|userID" into parts
 func splitGroupKey(key string) []string {

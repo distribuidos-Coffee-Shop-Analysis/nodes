@@ -3,9 +3,9 @@ package joiners
 import (
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
@@ -29,17 +29,6 @@ func (j *Q4UserJoiner) Name() string {
 	return "q4_joiner_users"
 }
 
-// normalizeUserID removes trailing ".0" from user_id if present
-// This handles cases where user_id might come as "14202.0" instead of "14202"
-func normalizeUserID(userID string) string {
-	userID = strings.TrimSpace(userID)
-	// If user_id ends with ".0", remove it
-	if strings.HasSuffix(userID, ".0") {
-		return strings.TrimSuffix(userID, ".0")
-	}
-	return userID
-}
-
 // StoreReferenceDataset stores user reference data for future joins
 // Only stores user_id and birthdate to optimize memory usage (users dataset is large)
 func (j *Q4UserJoiner) StoreReferenceDataset(records []protocol.Record) error {
@@ -52,8 +41,7 @@ func (j *Q4UserJoiner) StoreReferenceDataset(records []protocol.Record) error {
 			return fmt.Errorf("expected UserRecord, got %T", record)
 		}
 
-		// Normalize user_id and store only birthdate (user_id is the key) to reduce memory footprint
-		normalizedUserID := normalizeUserID(userRecord.UserID)
+		normalizedUserID := common.NormalizeUserID(userRecord.UserID)
 		j.users[normalizedUserID] = userRecord.Birthdate
 	}
 
@@ -74,11 +62,13 @@ func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record) ([]proto
 		}
 
 		// Normalize user_id before lookup
-		normalizedUserID := normalizeUserID(aggRecord.UserID)
+		normalizedUserID := common.NormalizeUserID(aggRecord.UserID)
 
 		// Join aggregated data with user information (lookup birthdate)
 		birthdate, exists := j.users[normalizedUserID]
 		if !exists {
+			log.Printf("action: q4_user_join_missing | user_id: %s | store_id: %s",
+				normalizedUserID, aggRecord.StoreID)
 			continue // Skip records without matching users
 		}
 

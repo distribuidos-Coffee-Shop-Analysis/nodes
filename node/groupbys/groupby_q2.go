@@ -23,6 +23,17 @@ func (g *Q2GroupBy) Name() string {
 	return "q2_groupby_year_month_item"
 }
 
+// NewGroupByBatch creates a batch message specifically for Q2 grouped data with dual subdatasets
+func (g *Q2GroupBy) NewGroupByBatch(batchIndex int, records []protocol.Record, eof bool) *protocol.BatchMessage {
+	return &protocol.BatchMessage{
+		Type:        protocol.MessageTypeBatch,
+		DatasetType: protocol.DatasetTypeQ2Groups,
+		BatchIndex:  batchIndex,
+		Records:     records,
+		EOF:         eof,
+	}
+}
+
 // ProcessBatch groups records by year_month_created_at and item_id, generating two subdatasets:
 // 1. Quantity records (count of transactions)
 // 2. Subtotal records (sum of subtotals)

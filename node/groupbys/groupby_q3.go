@@ -23,6 +23,17 @@ func (g *Q3GroupBy) Name() string {
 	return "q3_groupby_year_half_store"
 }
 
+// NewGroupByBatch creates a batch message specifically for Q3 grouped data
+func (g *Q3GroupBy) NewGroupByBatch(batchIndex int, records []protocol.Record, eof bool) *protocol.BatchMessage {
+	return &protocol.BatchMessage{
+		Type:        protocol.MessageTypeBatch,
+		DatasetType: protocol.DatasetTypeQ3Groups,
+		BatchIndex:  batchIndex,
+		Records:     records,
+		EOF:         eof,
+	}
+}
+
 // ProcessBatch groups records by year_half_created_at and store_id, summing final_amount as TPV
 func (g *Q3GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protocol.Record, error) {
 	// Map to accumulate TPV by year_half + store_id

@@ -11,7 +11,7 @@ import (
 
 // encodeToByteArray encodes batch message to byte array
 func EncodeToByteArray(batchMessage *protocol.BatchMessage) []byte {
-	// [MessageType][DatasetType][BatchIndex|EOF|RecordCount|Records...]
+	// [MessageType][DatasetType][ClientID|BatchIndex|EOF|RecordCount|Records...]
 	data := make([]byte, 0)
 	data = append(data, protocol.MessageTypeBatch)
 	data = append(data, byte(batchMessage.DatasetType))
@@ -23,13 +23,13 @@ func EncodeToByteArray(batchMessage *protocol.BatchMessage) []byte {
 		return data
 	}
 
-	// Build content: BatchIndex|EOF|RecordCount|Record1|Record2|...
+	// Build content: ClientID|BatchIndex|EOF|RecordCount|Record1|Record2|...
 	eofValue := "0"
 	if batchMessage.EOF {
 		eofValue = "1"
 	}
 
-	content := fmt.Sprintf("%d|%s|%d", batchMessage.BatchIndex, eofValue, len(batchMessage.Records))
+	content := fmt.Sprintf("%s|%d|%s|%d", batchMessage.ClientID, batchMessage.BatchIndex, eofValue, len(batchMessage.Records))
 	for _, record := range batchMessage.Records {
 		content += "|" + record.Serialize()
 	}
@@ -46,7 +46,7 @@ func isQ2DualDatasetType(dt protocol.DatasetType) bool {
 }
 
 // encodeQ2DualDataset encodes Q2 datasets with two subdatasets
-// Format: BatchIndex|EOF|len(subset1)|records_subset1|len(subset2)|records_subset2
+// Format: ClientID|BatchIndex|EOF|len(subset1)|records_subset1|len(subset2)|records_subset2
 func encodeQ2DualDataset(batchMessage *protocol.BatchMessage) string {
 	eofValue := "0"
 	if batchMessage.EOF {
@@ -56,8 +56,8 @@ func encodeQ2DualDataset(batchMessage *protocol.BatchMessage) string {
 	// Separate records into two groups based on their specific type
 	group1, group2 := separateQ2Records(batchMessage.Records, batchMessage.DatasetType)
 
-	// Build: BatchIndex|EOF|len(group1)|group1_records|len(group2)|group2_records
-	content := fmt.Sprintf("%d|%s|%d", batchMessage.BatchIndex, eofValue, len(group1))
+	// Build: ClientID|BatchIndex|EOF|len(group1)|group1_records|len(group2)|group2_records
+	content := fmt.Sprintf("%s|%d|%s|%d", batchMessage.ClientID, batchMessage.BatchIndex, eofValue, len(group1))
 
 	// Serialize group1 records
 	for _, record := range group1 {

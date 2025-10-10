@@ -130,8 +130,8 @@ func (h *JoinerHandler) processAggregatedData(batchMessage *protocol.BatchMessag
 		return err
 	}
 
-	// Create output batch with joined data
-	outputBatch := h.createOutputBatch(batchMessage.BatchIndex, joinedRecords, batchMessage.EOF)
+	// Create output batch with joined data (propagate ClientID)
+	outputBatch := h.createOutputBatch(batchMessage.BatchIndex, joinedRecords, batchMessage.EOF, batchMessage.ClientID)
 
 	// Publish joined results
 	publisher, err := middleware.NewPublisher(connection, wiring)
@@ -188,10 +188,11 @@ func (h *JoinerHandler) handleAggregatedData(batchMessage *protocol.BatchMessage
 }
 
 // createOutputBatch creates the output batch with the correct dataset type
-func (h *JoinerHandler) createOutputBatch(batchIndex int, records []protocol.Record, eof bool) *protocol.BatchMessage {
+func (h *JoinerHandler) createOutputBatch(batchIndex int, records []protocol.Record, eof bool, clientID string) *protocol.BatchMessage {
 	return &protocol.BatchMessage{
 		Type:        protocol.MessageTypeBatch,
 		DatasetType: h.joiner.GetOutputDatasetType(),
+		ClientID:    clientID,
 		BatchIndex:  batchIndex,
 		Records:     records,
 		EOF:         eof,

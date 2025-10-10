@@ -11,6 +11,7 @@ import (
 type BatchMessage struct {
 	Type        int
 	DatasetType DatasetType
+	ClientID    string 
 	BatchIndex  int
 	Records     []Record
 	EOF         bool
@@ -57,10 +58,11 @@ func NewQ2GroupByBatch(batchIndex int, records []Record, eof bool) *BatchMessage
 }
 
 // NewQ2AggregateBatch creates a batch message specifically for Q2 aggregated data with dual subdatasets
-func NewQ2AggregateBatch(batchIndex int, records []Record, eof bool) *BatchMessage {
+func NewQ2AggregateBatch(batchIndex int, records []Record, clientID string,	eof bool) *BatchMessage {
 	return &BatchMessage{
 		Type:        MessageTypeBatch,
 		DatasetType: DatasetTypeQ2Agg, // Q2Agg for aggregate output
+		ClientID:    clientID,
 		BatchIndex:  batchIndex,
 		Records:     records,
 		EOF:         eof,
@@ -90,7 +92,7 @@ func NewQ4GroupByBatch(batchIndex int, records []Record, eof bool) *BatchMessage
 }
 
 // NewAggregateBatch creates a batch message for aggregated data
-func NewAggregateBatch(batchIndex int, records []Record, eof bool) *BatchMessage {
+func NewAggregateBatch(batchIndex int, records []Record, clientID string, eof bool) *BatchMessage {
 	// Determine dataset type from the first record
 	var datasetType DatasetType = DatasetTypeQ4Agg // default
 
@@ -101,6 +103,7 @@ func NewAggregateBatch(batchIndex int, records []Record, eof bool) *BatchMessage
 	return &BatchMessage{
 		Type:        MessageTypeBatch,
 		DatasetType: datasetType,
+		ClientID:    clientID,
 		BatchIndex:  batchIndex,
 		Records:     records,
 		EOF:         eof,
@@ -121,26 +124,29 @@ func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 	content := string(data[2:])
 	parts := strings.Split(content, "|")
 
-	if len(parts) < 3 {
-		return nil, fmt.Errorf("invalid batch message format: missing BatchIndex, EOF or RecordCount")
+	if len(parts) < 4 {
+		return nil, fmt.Errorf("invalid batch message format: missing ClientID, BatchIndex, EOF or RecordCount")
 	}
 
-	batchIndex, err := strconv.Atoi(parts[0])
+	clientID := parts[0]
+
+	batchIndex, err := strconv.Atoi(parts[1])
 	if err != nil {
 		return nil, fmt.Errorf("invalid batch index: %v", err)
 	}
 
-	eof := parts[1] == "1"
+	eof := parts[2] == "1"
 
 	// Check if this is a Q2 dual dataset type
 	if isQ2DualDatasetType(datasetType) {
-		records, err := parseQ2DualDataset(parts[2:], datasetType)
+		records, err := parseQ2DualDataset(parts[3:], datasetType)
 		if err != nil {
 			return nil, err
 		}
 		return &BatchMessage{
 			Type:        MessageTypeBatch,
 			DatasetType: datasetType,
+			ClientID:    clientID,
 			BatchIndex:  batchIndex,
 			Records:     records,
 			EOF:         eof,
@@ -148,7 +154,7 @@ func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 	}
 
 	// Regular parsing for non-Q2 datasets
-	recordCount, err := strconv.Atoi(parts[2])
+	recordCount, err := strconv.Atoi(parts[3])
 	if err != nil {
 		return nil, fmt.Errorf("invalid record count: %v", err)
 	}
@@ -158,7 +164,7 @@ func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 		return nil, err
 	}
 
-	dataParts := parts[3:] // Skip BatchIndex, EOF and RecordCount
+	dataParts := parts[4:] // Skip ClientID, BatchIndex, EOF and RecordCount
 
 	records := make([]Record, 0, recordCount)
 	for i := 0; i < recordCount; i++ {
@@ -181,6 +187,7 @@ func BatchMessageFromData(data []byte) (*BatchMessage, error) {
 	return &BatchMessage{
 		Type:        MessageTypeBatch,
 		DatasetType: datasetType,
+		ClientID:    clientID,
 		BatchIndex:  batchIndex,
 		Records:     records,
 		EOF:         eof,

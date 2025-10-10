@@ -151,7 +151,7 @@ func (q *Q4Aggregate) Finalize() ([]protocol.Record, error) {
 
 // GetBatchesToPublish returns batches partitioned by user_id for distributed join
 // Implements the RecordAggregate interface
-func (q *Q4Aggregate) GetBatchesToPublish(batchIndex int) ([]BatchToPublish, error) {
+func (q *Q4Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]BatchToPublish, error) {
 
 	cfg := common.GetConfig()
 	joinersCount := cfg.GetQ4JoinersCount()
@@ -188,7 +188,7 @@ func (q *Q4Aggregate) GetBatchesToPublish(batchIndex int) ([]BatchToPublish, err
 	for partition, records := range partitionedRecords {
 		routingKey := fmt.Sprintf("joiner.%d.q4_agg", partition)
 
-		batch := protocol.NewAggregateBatch(batchIndex, records, true)
+		batch := protocol.NewAggregateBatch(batchIndex, records, clientID, true)
 
 		batchesToPublish = append(batchesToPublish, BatchToPublish{
 			Batch:      batch,

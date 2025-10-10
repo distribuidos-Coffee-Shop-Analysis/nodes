@@ -201,14 +201,14 @@ func findMostProfitableItem(items map[string]float64) (string, float64) {
 
 // GetBatchesToPublish returns a single batch with all aggregated results
 // Q2 doesn't need partitioning, so returns a single batch with empty routing key (uses default from config)
-func (a *Q2Aggregate) GetBatchesToPublish(batchIndex int) ([]BatchToPublish, error) {
+func (a *Q2Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]BatchToPublish, error) {
 	results, err := a.Finalize()
 	if err != nil {
 		return nil, err
 	}
 
-	batch := protocol.NewQ2AggregateBatch(batchIndex, results, true)
-
+	batch := protocol.NewQ2AggregateBatch(batchIndex, results, clientID, true)
+	
 	return []BatchToPublish{
 		{
 			Batch:      batch,

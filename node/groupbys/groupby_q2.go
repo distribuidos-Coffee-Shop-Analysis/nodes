@@ -24,10 +24,11 @@ func (g *Q2GroupBy) Name() string {
 }
 
 // NewGroupByBatch creates a batch message specifically for Q2 grouped data with dual subdatasets
-func (g *Q2GroupBy) NewGroupByBatch(batchIndex int, records []protocol.Record, eof bool) *protocol.BatchMessage {
+func (g *Q2GroupBy) NewGroupByBatch(batchIndex int, records []protocol.Record, eof bool, clientID string) *protocol.BatchMessage {
 	return &protocol.BatchMessage{
 		Type:        protocol.MessageTypeBatch,
 		DatasetType: protocol.DatasetTypeQ2Groups,
+		ClientID:    clientID,
 		BatchIndex:  batchIndex,
 		Records:     records,
 		EOF:         eof,

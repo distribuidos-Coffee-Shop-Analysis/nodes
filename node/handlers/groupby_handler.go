@@ -54,7 +54,7 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 
 	batchIndex := batchMessage.BatchIndex
 
-	groupByBatch := h.groupby.NewGroupByBatch(batchIndex, groupedRecords, batchMessage.EOF)
+	groupByBatch := h.groupby.NewGroupByBatch(batchIndex, groupedRecords, batchMessage.EOF, batchMessage.ClientID)
 
 	publisher, err := middleware.NewPublisher(connection, wiring)
 	if err != nil {

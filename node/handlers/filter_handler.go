@@ -17,6 +17,10 @@ type FilterHandler struct {
 	filter      filters.Filter
 	transformer RecordTransformer    // Optional: transforms records after filtering
 	outputType  protocol.DatasetType // Optional: override output dataset type
+
+	// Reusable publisher to avoid channel exhaustion
+	pub   *middleware.Publisher
+	pubMu sync.Mutex
 }
 
 func NewFilterHandler(filter filters.Filter) *FilterHandler {
@@ -41,9 +45,17 @@ func (h *FilterHandler) Name() string {
 
 // startFilterHandler starts the transaction filter handler
 func (h *FilterHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
+	// Create ONE publisher/channel for this handler and reuse it
+	pub, err := middleware.NewPublisher(queueManager.Connection, queueManager.Wiring)
+	if err != nil {
+		log.Printf("action: create_publisher | result: fail | error: %v", err)
+		return err
+	}
+	h.pub = pub
+	log.Printf("action: create_publisher | result: success | handler: %s", h.Name())
 
 	// Consume with callback (blocks until StopConsuming or error)
-	err := queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
+	err = queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
 
 		h.Handle(batchMessage, queueManager.Connection,
 			queueManager.Wiring, clientWg, delivery)
@@ -86,21 +98,18 @@ func (tfh *FilterHandler) Handle(batchMessage *protocol.BatchMessage, connection
 		out.DatasetType = tfh.outputType
 	}
 
-	publisher, err := middleware.NewPublisher(connection, wiring)
-	if err != nil {
-		log.Printf("action: create publisher | result: fail | error: %v", err)
-		msg.Nack(false, true) // Reject and requeue
-		return err
-	}
+	// Use the SHARED publisher (protected by mutex)
+	tfh.pubMu.Lock()
+	err := tfh.pub.SendToDatasetOutputExchanges(&out)
+	tfh.pubMu.Unlock()
 
-	if err := publisher.SendToDatasetOutputExchanges(&out); err != nil {
+	if err != nil {
 		log.Printf("action: node_publish | result: fail | error: %v", err)
 		msg.Nack(false, true) // Reject and requeue
 		return err
 	}
 
-	msg.Ack(false)    // Acknowledge the message
-	publisher.Close() // Close channel after publishing
+	msg.Ack(false) // Acknowledge the message
 
 	return nil
 }

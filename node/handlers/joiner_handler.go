@@ -31,6 +31,10 @@ type JoinerClientState struct {
 type JoinerHandler struct {
 	newJoiner func() joiners.Joiner // Factory function to create new joiners per client
 	states    sync.Map              // map[string]*JoinerClientState - keyed by clientID
+
+	// Reusable publisher to avoid channel exhaustion
+	pub   *middleware.Publisher
+	pubMu sync.Mutex
 }
 
 // NewJoinerHandler creates a new joiner handler with a factory function
@@ -69,7 +73,15 @@ func (h *JoinerHandler) getState(clientID string) *JoinerClientState {
 
 // StartHandler starts the joiner handler - consumes from multiple exchanges
 func (h *JoinerHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
-	err := queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
+	pub, err := middleware.NewPublisher(queueManager.Connection, queueManager.Wiring)
+	if err != nil {
+		log.Printf("action: create_publisher | result: fail | error: %v", err)
+		return err
+	}
+	h.pub = pub
+	log.Printf("action: create_publisher | result: success | handler: %s", h.Name())
+
+	err = queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
 		h.Handle(batchMessage, queueManager.Connection, queueManager.Wiring, clientWg, delivery)
 	})
 	if err != nil {
@@ -115,9 +127,6 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 		msg.Nack(false, true)
 		return err
 	}
-
-	log.Printf("action: store_reference_data | client_id: %s | joiner: %s | records: %d | eof: %v",
-		clientID, state.joiner.Name(), len(batchMessage.Records), batchMessage.EOF)
 
 	// Check if this is the last batch of reference data (EOF received)
 	if batchMessage.EOF {
@@ -171,17 +180,12 @@ func (h *JoinerHandler) processAggregatedData(state *JoinerClientState, batchMes
 	// Create output batch with joined data (propagate ClientID)
 	outputBatch := h.createOutputBatch(state, batchMessage.BatchIndex, joinedRecords, batchMessage.EOF, clientID)
 
-	// Publish joined results
-	publisher, err := middleware.NewPublisher(connection, wiring)
-	if err != nil {
-		log.Printf("action: create_publisher | client_id: %s | joiner: %s | result: fail | error: %v",
-			clientID, state.joiner.Name(), err)
-		msg.Nack(false, true)
-		return err
-	}
-	defer publisher.Close()
+	// Publish joined results using the shared publisher with mutex protection
+	h.pubMu.Lock()
+	err = h.pub.SendToDatasetOutputExchanges(outputBatch)
+	h.pubMu.Unlock()
 
-	if err := publisher.SendToDatasetOutputExchanges(outputBatch); err != nil {
+	if err != nil {
 		log.Printf("action: joiner_publish | client_id: %s | joiner: %s | result: fail | error: %v",
 			clientID, state.joiner.Name(), err)
 		msg.Nack(false, true)

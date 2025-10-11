@@ -28,6 +28,9 @@ type AggregateClientState struct {
 type AggregateHandler struct {
 	newAggregate func() aggregates.Aggregate // Factory function to create new aggregates per client
 	states       sync.Map                    // map[string]*AggregateClientState - keyed by clientID
+
+	pub   *middleware.Publisher
+	pubMu sync.Mutex
 }
 
 // NewAggregateHandler creates a new aggregate handler with a factory function
@@ -65,7 +68,15 @@ func (h *AggregateHandler) getState(clientID string) *AggregateClientState {
 
 // StartHandler starts the aggregate handler
 func (h *AggregateHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
-	err := queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
+	pub, err := middleware.NewPublisher(queueManager.Connection, queueManager.Wiring)
+	if err != nil {
+		log.Printf("action: create_publisher | result: fail | error: %v", err)
+		return err
+	}
+	h.pub = pub
+	log.Printf("action: create_publisher | result: success | handler: %s", h.Name())
+
+	err = queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
 		h.Handle(batchMessage, queueManager.Connection,
 			queueManager.Wiring, clientWg, delivery)
 	})
@@ -135,16 +146,9 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 			return err
 		}
 
-		publisher, err := middleware.NewPublisher(connection, wiring)
-		if err != nil {
-			log.Printf("action: create_publisher | client_id: %s | aggregate: %s | result: fail | error: %v",
-				clientID, state.aggregate.Name(), err)
-			msg.Nack(false, true)
-			return err
-		}
-
-		err = h.publishBatches(publisher, batchesToPublish)
-		publisher.Close()
+		h.pubMu.Lock()
+		err = h.publishBatches(h.pub, batchesToPublish)
+		h.pubMu.Unlock()
 
 		if err != nil {
 			log.Printf("action: aggregate_publish | client_id: %s | aggregate: %s | result: fail | error: %v",

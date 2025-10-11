@@ -24,10 +24,11 @@ func (g *Q3GroupBy) Name() string {
 }
 
 // NewGroupByBatch creates a batch message specifically for Q3 grouped data
-func (g *Q3GroupBy) NewGroupByBatch(batchIndex int, records []protocol.Record, eof bool) *protocol.BatchMessage {
+func (g *Q3GroupBy) NewGroupByBatch(batchIndex int, records []protocol.Record, eof bool, clientID string) *protocol.BatchMessage {
 	return &protocol.BatchMessage{
 		Type:        protocol.MessageTypeBatch,
 		DatasetType: protocol.DatasetTypeQ3Groups,
+		ClientID:    clientID,
 		BatchIndex:  batchIndex,
 		Records:     records,
 		EOF:         eof,

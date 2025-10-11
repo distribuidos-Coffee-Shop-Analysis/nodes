@@ -108,13 +108,13 @@ func (a *Q3Aggregate) Finalize() ([]protocol.Record, error) {
 
 // GetBatchesToPublish returns a single batch with all aggregated results
 // Q3 doesn't need partitioning, so returns a single batch with empty routing key (uses default from config)
-func (a *Q3Aggregate) GetBatchesToPublish(batchIndex int) ([]BatchToPublish, error) {
+func (a *Q3Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]BatchToPublish, error) {
 	results, err := a.Finalize()
 	if err != nil {
 		return nil, err
 	}
 
-	batch := protocol.NewAggregateBatch(batchIndex, results, true)
+	batch := protocol.NewAggregateBatch(batchIndex, results, clientID, true)
 
 	return []BatchToPublish{
 		{

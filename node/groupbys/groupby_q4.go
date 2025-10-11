@@ -63,10 +63,11 @@ func (g *Q4GroupBy) ProcessBatch(records []protocol.Record, eof bool) ([]protoco
 }
 
 // NewGroupByBatch creates a new batch message for the group by processor
-func (g *Q4GroupBy) NewGroupByBatch(batchIndex int, records []protocol.Record, eof bool) *protocol.BatchMessage {
+func (g *Q4GroupBy) NewGroupByBatch(batchIndex int, records []protocol.Record, eof bool, clientID string) *protocol.BatchMessage {
 	return &protocol.BatchMessage{
 		Type:        protocol.MessageTypeBatch,
 		DatasetType: protocol.DatasetTypeQ4Groups,
+		ClientID:    clientID,
 		BatchIndex:  batchIndex,
 		Records:     records,
 		EOF:         eof,

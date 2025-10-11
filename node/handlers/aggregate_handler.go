@@ -16,6 +16,7 @@ import (
 type AggregateHandler struct {
 	aggregate                aggregates.RecordAggregate
 	mu                       sync.Mutex
+	clientID                 string // Client ID from first message
 	numberOfBatchesRemaining int
 	eofReceived              bool
 	oneTimeFinalize          bool
@@ -60,6 +61,11 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	clientWG.Add(1)
 	defer clientWG.Done()
 
+	// Capture ClientID from first message
+	if h.clientID == "" {
+		h.clientID = batchMessage.ClientID
+	}
+
 	// Accumulate this batch
 	err := h.aggregate.AccumulateBatch(batchMessage.Records, batchMessage.BatchIndex)
 	h.trackBatchIndex(batchMessage.BatchIndex)
@@ -97,10 +103,11 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 
 	if shouldFinalize {
 		h.oneTimeFinalize = false // Ensure finalize runs only once
+		clientID := h.clientID    // Capture clientID before unlock
 		h.mu.Unlock()             // Now we can unlock
 		log.Printf("action: aggregate_finalize | aggregate: %s | result: start", h.aggregate.Name())
 
-		batchesToPublish, err := h.aggregate.GetBatchesToPublish(batchMessage.BatchIndex)
+		batchesToPublish, err := h.aggregate.GetBatchesToPublish(batchMessage.BatchIndex, clientID)
 		if err != nil {
 			log.Printf("action: get_batches_to_publish | aggregate: %s | result: fail | error: %v",
 				h.aggregate.Name(), err)

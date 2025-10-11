@@ -25,5 +25,6 @@ type RecordAggregate interface {
 	// GetBatchesToPublish returns the batches to publish with optional custom routing keys
 	// Each aggregate decides how to partition/organize its results
 	// Returns a slice of batches to publish (can be 1 for simple aggregates, N for partitioned)
-	GetBatchesToPublish(batchIndex int) ([]BatchToPublish, error)
+	// clientID is propagated from incoming messages to route responses back to the correct client
+	GetBatchesToPublish(batchIndex int, clientID string) ([]BatchToPublish, error)
 }

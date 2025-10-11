@@ -14,12 +14,12 @@ import (
 type RecordTransformer func(protocol.Record) protocol.Record
 
 type FilterHandler struct {
-	filter      filters.RecordFilter
+	filter      filters.Filter
 	transformer RecordTransformer    // Optional: transforms records after filtering
 	outputType  protocol.DatasetType // Optional: override output dataset type
 }
 
-func NewFilterHandler(filter filters.RecordFilter) *FilterHandler {
+func NewFilterHandler(filter filters.Filter) *FilterHandler {
 	return &FilterHandler{
 		filter:      filter,
 		transformer: nil,
@@ -27,7 +27,7 @@ func NewFilterHandler(filter filters.RecordFilter) *FilterHandler {
 	}
 }
 
-func NewFilterHandlerWithTransform(filter filters.RecordFilter, transformer RecordTransformer, outputType protocol.DatasetType) *FilterHandler {
+func NewFilterHandlerWithTransform(filter filters.Filter, transformer RecordTransformer, outputType protocol.DatasetType) *FilterHandler {
 	return &FilterHandler{
 		filter:      filter,
 		transformer: transformer,

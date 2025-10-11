@@ -4,8 +4,8 @@ import (
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
-// RecordGroupBy defines the interface for different types of groupby operations
-type RecordGroupBy interface {
+// GroupBy defines the interface for different types of groupby operations
+type GroupBy interface {
 	ProcessBatch(records []protocol.Record, eof bool) ([]protocol.Record, error)
 	Name() string
 	// NewGroupByBatch creates a batch message with the grouped records

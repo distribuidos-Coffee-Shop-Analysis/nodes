@@ -22,7 +22,7 @@ type bufferedBatch struct {
 
 // JoinerHandler handles join operations between aggregated data and reference data
 type JoinerHandler struct {
-	joiner joiners.RecordJoiner
+	joiner joiners.Joiner
 
 	// Synchronization state
 	mu                       sync.Mutex
@@ -31,7 +31,7 @@ type JoinerHandler struct {
 }
 
 // NewJoinerHandler creates a new joiner handler with the specified joiner
-func NewJoinerHandler(joiner joiners.RecordJoiner) *JoinerHandler {
+func NewJoinerHandler(joiner joiners.Joiner) *JoinerHandler {
 	return &JoinerHandler{
 		joiner:                   joiner,
 		referenceDatasetComplete: false,

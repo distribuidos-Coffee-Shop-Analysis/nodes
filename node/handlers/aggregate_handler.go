@@ -13,32 +13,54 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 )
 
-type AggregateHandler struct {
-	aggregate                aggregates.RecordAggregate
+// AggregateClientState holds per-client state for aggregate operations
+type AggregateClientState struct {
 	mu                       sync.Mutex
-	clientID                 string // Client ID from first message
-	numberOfBatchesRemaining int
+	aggregate                aggregates.Aggregate
 	eofReceived              bool
 	oneTimeFinalize          bool
-	// Track unique batch indices
-	seenBatchIndices map[int]bool // track which batch indices we've seen
-	uniqueBatchCount atomic.Int32 // count of unique batch indices
+	numberOfBatchesRemaining int
+	seenBatchIndices         map[int]bool
+	uniqueBatchCount         atomic.Int32
 }
 
-func NewAggregateHandler(aggregate aggregates.RecordAggregate) *AggregateHandler {
+// AggregateHandler manages aggregate operations for multiple clients
+type AggregateHandler struct {
+	newAggregate func() aggregates.Aggregate // Factory function to create new aggregates per client
+	states       sync.Map                    // map[string]*AggregateClientState - keyed by clientID
+}
+
+// NewAggregateHandler creates a new aggregate handler with a factory function
+func NewAggregateHandler(newAggregate func() aggregates.Aggregate) *AggregateHandler {
 	return &AggregateHandler{
-		aggregate:                aggregate,
-		numberOfBatchesRemaining: 0,
-		eofReceived:              false,
-		oneTimeFinalize:          true,
-		mu:                       sync.Mutex{},
-		seenBatchIndices:         make(map[int]bool),
-		uniqueBatchCount:         atomic.Int32{},
+		newAggregate: newAggregate,
 	}
 }
 
 func (h *AggregateHandler) Name() string {
-	return "aggregate_" + h.aggregate.Name()
+	return "aggregate_" + h.sampleName()
+}
+
+// sampleName instantiates a temporary aggregate just to read its name
+func (h *AggregateHandler) sampleName() string {
+	return h.newAggregate().Name()
+}
+
+// getState retrieves or creates the state for a specific client
+func (h *AggregateHandler) getState(clientID string) *AggregateClientState {
+	if v, ok := h.states.Load(clientID); ok {
+		return v.(*AggregateClientState)
+	}
+
+	// Create new state for this client
+	st := &AggregateClientState{
+		aggregate:        h.newAggregate(),
+		oneTimeFinalize:  true,
+		seenBatchIndices: make(map[int]bool),
+	}
+
+	actual, _ := h.states.LoadOrStore(clientID, st)
+	return actual.(*AggregateClientState)
 }
 
 // StartHandler starts the aggregate handler
@@ -61,64 +83,62 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	clientWG.Add(1)
 	defer clientWG.Done()
 
-	// Capture ClientID from first message
-	if h.clientID == "" {
-		h.clientID = batchMessage.ClientID
-	}
+	clientID := batchMessage.ClientID
+	state := h.getState(clientID)
 
-	// Accumulate this batch
-	err := h.aggregate.AccumulateBatch(batchMessage.Records, batchMessage.BatchIndex)
-	h.trackBatchIndex(batchMessage.BatchIndex)
+	// Accumulate this batch for this specific client
+	err := state.aggregate.AccumulateBatch(batchMessage.Records, batchMessage.BatchIndex)
+	state.trackBatchIndex(batchMessage.BatchIndex)
 	if err != nil {
-		log.Printf("action: aggregate_accumulate | aggregate: %s | result: fail | error: %v",
-			h.aggregate.Name(), err)
+		log.Printf("action: aggregate_accumulate | client_id: %s | aggregate: %s | result: fail | error: %v",
+			clientID, state.aggregate.Name(), err)
 		msg.Ack(false) // Ack to remove empty or bad batches
 		return err
 	}
 
-	h.mu.Lock()
+	state.mu.Lock()
 	// Check if this batch has EOF flag
 	if batchMessage.EOF {
 		// Get the actual count AFTER processing this batch
-		accumulatedCountAfterThisBatch := h.getUniqueBatchCount()
-		expectedTotalBatches := batchMessage.BatchIndex 
-		h.numberOfBatchesRemaining = expectedTotalBatches - int(accumulatedCountAfterThisBatch)
-		h.eofReceived = true
+		accumulatedCountAfterThisBatch := state.getUniqueBatchCount()
+		expectedTotalBatches := batchMessage.BatchIndex
+		state.numberOfBatchesRemaining = expectedTotalBatches - int(accumulatedCountAfterThisBatch)
+		state.eofReceived = true
 
-		log.Printf("action: aggregate_eof_received | aggregate: %s | max_batch_index: %d | "+
+		log.Printf("action: aggregate_eof_received | client_id: %s | aggregate: %s | max_batch_index: %d | "+
 			"accumulated_batches: %d | expected_total: %d | batches_remaining: %d",
-			h.aggregate.Name(), batchMessage.BatchIndex, accumulatedCountAfterThisBatch,
-			expectedTotalBatches, h.numberOfBatchesRemaining)
+			clientID, state.aggregate.Name(), batchMessage.BatchIndex, accumulatedCountAfterThisBatch,
+			expectedTotalBatches, state.numberOfBatchesRemaining)
 
-	} else if h.eofReceived {
+	} else if state.eofReceived {
 		// If EOF was already received, decrement the remaining batch count
-		h.numberOfBatchesRemaining--
-		log.Printf("action: aggregate_batch_processed | aggregate: %s | batch_index: %d | "+
+		state.numberOfBatchesRemaining--
+		log.Printf("action: aggregate_batch_processed | client_id: %s | aggregate: %s | batch_index: %d | "+
 			"batches_remaining: %d",
-			h.aggregate.Name(), batchMessage.BatchIndex, h.numberOfBatchesRemaining)
+			clientID, state.aggregate.Name(), batchMessage.BatchIndex, state.numberOfBatchesRemaining)
 	}
 
 	// Check if we should finalize
-	shouldFinalize := h.numberOfBatchesRemaining == 0 && h.eofReceived && h.oneTimeFinalize
+	shouldFinalize := state.numberOfBatchesRemaining == 0 && state.eofReceived && state.oneTimeFinalize
 
 	if shouldFinalize {
-		h.oneTimeFinalize = false // Ensure finalize runs only once
-		clientID := h.clientID    // Capture clientID before unlock
-		h.mu.Unlock()             // Now we can unlock
-		log.Printf("action: aggregate_finalize | aggregate: %s | result: start", h.aggregate.Name())
+		state.oneTimeFinalize = false // Ensure finalize runs only once
+		state.mu.Unlock()             // Now we can unlock
+		log.Printf("action: aggregate_finalize | client_id: %s | aggregate: %s | result: start",
+			clientID, state.aggregate.Name())
 
-		batchesToPublish, err := h.aggregate.GetBatchesToPublish(batchMessage.BatchIndex, clientID)
+		batchesToPublish, err := state.aggregate.GetBatchesToPublish(batchMessage.BatchIndex, clientID)
 		if err != nil {
-			log.Printf("action: get_batches_to_publish | aggregate: %s | result: fail | error: %v",
-				h.aggregate.Name(), err)
+			log.Printf("action: get_batches_to_publish | client_id: %s | aggregate: %s | result: fail | error: %v",
+				clientID, state.aggregate.Name(), err)
 			msg.Nack(false, true)
 			return err
 		}
 
 		publisher, err := middleware.NewPublisher(connection, wiring)
 		if err != nil {
-			log.Printf("action: create_publisher | aggregate: %s | result: fail | error: %v",
-				h.aggregate.Name(), err)
+			log.Printf("action: create_publisher | client_id: %s | aggregate: %s | result: fail | error: %v",
+				clientID, state.aggregate.Name(), err)
 			msg.Nack(false, true)
 			return err
 		}
@@ -127,16 +147,16 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 		publisher.Close()
 
 		if err != nil {
-			log.Printf("action: aggregate_publish | aggregate: %s | result: fail | error: %v",
-				h.aggregate.Name(), err)
+			log.Printf("action: aggregate_publish | client_id: %s | aggregate: %s | result: fail | error: %v",
+				clientID, state.aggregate.Name(), err)
 			msg.Nack(false, true)
 			return err
 		}
 
-		log.Printf("action: aggregate_publish | aggregate: %s | result: success | batches_published: %d",
-			h.aggregate.Name(), len(batchesToPublish))
+		log.Printf("action: aggregate_publish | client_id: %s | aggregate: %s | result: success | batches_published: %d",
+			clientID, state.aggregate.Name(), len(batchesToPublish))
 	} else {
-		h.mu.Unlock() // This unlock is necessary in case we dont have to finalize yet
+		state.mu.Unlock() // This unlock is necessary in case we dont have to finalize yet
 	}
 
 	// Acknowledge the message
@@ -161,14 +181,17 @@ func (h *AggregateHandler) publishBatches(publisher *middleware.Publisher, batch
 	return nil
 }
 
-func (h *AggregateHandler) trackBatchIndex(batchIndex int) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if !h.seenBatchIndices[batchIndex] {
-		h.seenBatchIndices[batchIndex] = true
-		h.uniqueBatchCount.Add(1)
+// trackBatchIndex tracks unique batch indices for a specific client state
+func (s *AggregateClientState) trackBatchIndex(batchIndex int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.seenBatchIndices[batchIndex] {
+		s.seenBatchIndices[batchIndex] = true
+		s.uniqueBatchCount.Add(1)
 	}
 }
-func (h *AggregateHandler) getUniqueBatchCount() int32 {
-	return h.uniqueBatchCount.Load()
+
+// getUniqueBatchCount returns the number of unique batches seen for this client
+func (s *AggregateClientState) getUniqueBatchCount() int32 {
+	return s.uniqueBatchCount.Load()
 }

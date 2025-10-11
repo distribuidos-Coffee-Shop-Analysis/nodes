@@ -2,8 +2,8 @@ package joiners
 
 import "github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 
-// RecordJoiner defines the interface for different types of join operations
-type RecordJoiner interface {
+// Joiner defines the interface for different types of join operations
+type Joiner interface {
 	// Name returns the name of this joiner
 	Name() string
 

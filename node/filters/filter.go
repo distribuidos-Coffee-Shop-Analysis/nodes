@@ -6,8 +6,8 @@ import (
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
-// RecordFilter defines the interface for different types of filters
-type RecordFilter interface {
+// Filter defines the interface for different types of filters
+type Filter interface {
 	// Filter returns true if the record should be kept, false if it should be filtered out
 	Filter(record protocol.Record) bool
 	// Name returns the filter name for logging purposes

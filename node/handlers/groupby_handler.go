@@ -12,10 +12,10 @@ import (
 )
 
 type GroupByHandler struct {
-	groupby groupbys.RecordGroupBy
+	groupby groupbys.GroupBy
 }
 
-func NewGroupByHandler(groupby groupbys.RecordGroupBy) *GroupByHandler {
+func NewGroupByHandler(groupby groupbys.GroupBy) *GroupByHandler {
 	return &GroupByHandler{
 		groupby: groupby,
 	}

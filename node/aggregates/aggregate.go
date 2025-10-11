@@ -10,13 +10,14 @@ type BatchToPublish struct {
 	RoutingKey string // If empty, use default routing from config
 }
 
-// RecordAggregate defines the interface for different types of aggregate operations
-type RecordAggregate interface {
-	// AccumulateBatch processes and accumulates a batch of records
+// Aggregate defines the interface for different types of aggregate operations
+// Each aggregate instance is tied to a specific client and maintains isolated state
+type Aggregate interface {
+	// AccumulateBatch processes and accumulates a batch of records for a specific client
 	AccumulateBatch(records []protocol.Record, batchIndex int) error
 
 	// Finalize processes all accumulated data and returns the final aggregated results
-	// This is called when EOF is received and all batches have been processed
+	// This is called when EOF is received and all batches have been processed for this client
 	Finalize() ([]protocol.Record, error)
 
 	// Name returns the name of the aggregate for logging

@@ -72,17 +72,21 @@ func NewHandler(role common.NodeRole) Handler {
 			return aggregates.NewQ4Aggregate()
 		})
 	case common.RoleJoinerQ2:
-		joiner := joiners.NewQ2Joiner()
-		return handlers.NewJoinerHandler(joiner)
+		return handlers.NewJoinerHandler(func() joiners.Joiner {
+			return joiners.NewQ2Joiner()
+		})
 	case common.RoleJoinerQ3:
-		joiner := joiners.NewQ3Joiner()
-		return handlers.NewJoinerHandler(joiner)
+		return handlers.NewJoinerHandler(func() joiners.Joiner {
+			return joiners.NewQ3Joiner()
+		})
 	case common.RoleJoinerQ4U:
-		joiner := joiners.NewQ4UserJoiner()
-		return handlers.NewJoinerHandler(joiner)
+		return handlers.NewJoinerHandler(func() joiners.Joiner {
+			return joiners.NewQ4UserJoiner()
+		})
 	case common.RoleJoinerQ4S:
-		joiner := joiners.NewQ4StoreJoiner()
-		return handlers.NewJoinerHandler(joiner)
+		return handlers.NewJoinerHandler(func() joiners.Joiner {
+			return joiners.NewQ4StoreJoiner()
+		})
 	default:
 		panic("unknown role for handler")
 	}

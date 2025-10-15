@@ -169,7 +169,7 @@ func (h *JoinerHandler) processAggregatedData(state *JoinerClientState, batchMes
 		clientID, state.joiner.Name(), len(batchMessage.Records))
 
 	// Perform join using this client's joiner
-	joinedRecords, err := state.joiner.PerformJoin(batchMessage.Records)
+	joinedRecords, err := state.joiner.PerformJoin(batchMessage.Records, clientID)
 	if err != nil {
 		log.Printf("action: perform_join | client_id: %s | joiner: %s | result: fail | error: %v",
 			clientID, state.joiner.Name(), err)

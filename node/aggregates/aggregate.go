@@ -18,7 +18,7 @@ type Aggregate interface {
 
 	// Finalize processes all accumulated data and returns the final aggregated results
 	// This is called when EOF is received and all batches have been processed for this client
-	Finalize() ([]protocol.Record, error)
+	Finalize(clientId string) ([]protocol.Record, error)
 
 	// Name returns the name of the aggregate for logging
 	Name() string

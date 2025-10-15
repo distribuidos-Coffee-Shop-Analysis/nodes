@@ -78,9 +78,9 @@ func (a *Q3Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 }
 
 // Finalize generates the final aggregated TPV records by year_half and store
-func (a *Q3Aggregate) Finalize() ([]protocol.Record, error) {
+func (a *Q3Aggregate) Finalize(clientId string) ([]protocol.Record, error) {
 
-	log.Printf("action: q3_aggregate_finalize | tpv_entries: %d", len(a.tpvData))
+	log.Printf("action: q3_aggregate_finalize | client_id: %s | tpv_entries: %d", clientId, len(a.tpvData))
 
 	var result []protocol.Record
 
@@ -97,11 +97,11 @@ func (a *Q3Aggregate) Finalize() ([]protocol.Record, error) {
 
 		result = append(result, record)
 
-		log.Printf("action: q3_aggregate_emit | year_half: %s | store_id: %s | tpv: %.2f",
-			yearHalf, storeID, tpv)
+		log.Printf("action: q3_aggregate_emit | client_id: %s | year_half: %s | store_id: %s | tpv: %.2f",
+			clientId, yearHalf, storeID, tpv)
 	}
 
-	log.Printf("action: q3_aggregate_finalize_complete | total_results: %d", len(result))
+	log.Printf("action: q3_aggregate_finalize_complete | client_id: %s | total_results: %d", clientId, len(result))
 
 	return result, nil
 }
@@ -109,7 +109,7 @@ func (a *Q3Aggregate) Finalize() ([]protocol.Record, error) {
 // GetBatchesToPublish returns a single batch with all aggregated results
 // Q3 doesn't need partitioning, so returns a single batch with empty routing key (uses default from config)
 func (a *Q3Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]BatchToPublish, error) {
-	results, err := a.Finalize()
+	results, err := a.Finalize(clientID)
 	if err != nil {
 		return nil, err
 	}

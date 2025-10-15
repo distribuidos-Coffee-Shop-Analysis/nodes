@@ -13,7 +13,7 @@ type Joiner interface {
 	StoreReferenceDataset(records []protocol.Record) error
 
 	// PerformJoin joins aggregated data with stored reference data for a specific client
-	PerformJoin(aggregatedRecords []protocol.Record) ([]protocol.Record, error)
+	PerformJoin(aggregatedRecords []protocol.Record, clientId string) ([]protocol.Record, error)
 
 	// GetOutputDatasetType returns the dataset type for the joined output
 	GetOutputDatasetType() protocol.DatasetType

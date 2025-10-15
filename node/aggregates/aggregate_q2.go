@@ -89,10 +89,10 @@ func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 // trackBatchIndex is no longer needed as we track inline in AccumulateBatch
 
 // Finalize calculates the best selling and most profitable items per year_month
-func (a *Q2Aggregate) Finalize() ([]protocol.Record, error) {
+func (a *Q2Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
 
-	log.Printf("action: q2_aggregate_finalize | quantity_entries: %d | profit_entries: %d",
-		len(a.quantityData), len(a.profitData))
+	log.Printf("action: q2_aggregate_finalize | client_id: %s | quantity_entries: %d | profit_entries: %d",
+		clientID, len(a.quantityData), len(a.profitData))
 
 	// Group data by year_month for processing
 	quantityByMonth := make(map[string]map[string]int)   // year_month -> item_id -> quantity
@@ -148,7 +148,7 @@ func (a *Q2Aggregate) Finalize() ([]protocol.Record, error) {
 		}
 	}
 
-	log.Printf("action: q2_aggregate_finalize_complete | total_results: %d", len(result))
+	log.Printf("action: q2_aggregate_finalize_complete | client_id: %s | total_results: %d", clientID, len(result))
 
 	return result, nil
 }
@@ -202,7 +202,7 @@ func findMostProfitableItem(items map[string]float64) (string, float64) {
 // GetBatchesToPublish returns a single batch with all aggregated results
 // Q2 doesn't need partitioning, so returns a single batch with empty routing key (uses default from config)
 func (a *Q2Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]BatchToPublish, error) {
-	results, err := a.Finalize()
+	results, err := a.Finalize(clientID)
 	if err != nil {
 		return nil, err
 	}

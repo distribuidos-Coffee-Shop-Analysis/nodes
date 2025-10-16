@@ -26,8 +26,9 @@ type AggregateClientState struct {
 
 // AggregateHandler manages aggregate operations for multiple clients
 type AggregateHandler struct {
-	newAggregate func() aggregates.Aggregate // Factory function to create new aggregates per client
-	states       sync.Map                    // map[string]*AggregateClientState - keyed by clientID
+	newAggregate func() aggregates.Aggregate      // Factory function to create new aggregates per client
+	states       map[string]*AggregateClientState // map[string]*AggregateClientState - keyed by clientID
+	statesMu     sync.RWMutex                     // Protects states map
 
 	pub   *middleware.Publisher
 	pubMu sync.Mutex
@@ -37,6 +38,7 @@ type AggregateHandler struct {
 func NewAggregateHandler(newAggregate func() aggregates.Aggregate) *AggregateHandler {
 	return &AggregateHandler{
 		newAggregate: newAggregate,
+		states:       make(map[string]*AggregateClientState),
 	}
 }
 
@@ -51,8 +53,21 @@ func (h *AggregateHandler) sampleName() string {
 
 // getState retrieves or creates the state for a specific client
 func (h *AggregateHandler) getState(clientID string) *AggregateClientState {
-	if v, ok := h.states.Load(clientID); ok {
-		return v.(*AggregateClientState)
+	// Try read-only access first (common case)
+	h.statesMu.RLock()
+	if state, ok := h.states[clientID]; ok {
+		h.statesMu.RUnlock()
+		return state
+	}
+	h.statesMu.RUnlock()
+
+	// Need to create new state - acquire write lock
+	h.statesMu.Lock()
+	defer h.statesMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if state, ok := h.states[clientID]; ok {
+		return state
 	}
 
 	// Create new state for this client
@@ -61,9 +76,8 @@ func (h *AggregateHandler) getState(clientID string) *AggregateClientState {
 		oneTimeFinalize:  true,
 		seenBatchIndices: make(map[int]bool),
 	}
-
-	actual, _ := h.states.LoadOrStore(clientID, st)
-	return actual.(*AggregateClientState)
+	h.states[clientID] = st
+	return st
 }
 
 // StartHandler starts the aggregate handler
@@ -159,6 +173,8 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 
 		log.Printf("action: aggregate_publish | client_id: %s | aggregate: %s | result: success | batches_published: %d",
 			clientID, state.aggregate.Name(), len(batchesToPublish))
+
+		h.cleanupClientState(clientID, state)
 	} else {
 		state.mu.Unlock() // This unlock is necessary in case we dont have to finalize yet
 	}
@@ -167,6 +183,28 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	msg.Ack(false)
 
 	return nil
+}
+
+// cleanupClientState removes a client's state from memory after finalization
+// Calls the aggregate's Cleanup() method to release resources, then removes the state
+func (h *AggregateHandler) cleanupClientState(clientID string, state *AggregateClientState) {
+	// Let the aggregate clean up its own resources (maps, slices, file descriptors, etc.)
+	if err := state.aggregate.Cleanup(); err != nil {
+		log.Printf("action: aggregate_cleanup | client_id: %s | result: fail | error: %v", clientID, err)
+	}
+
+	// Clear metadata
+	state.mu.Lock()
+	state.seenBatchIndices = nil
+	state.mu.Unlock()
+
+	// Remove the entire client state from the map
+	h.statesMu.Lock()
+	delete(h.states, clientID)
+	h.statesMu.Unlock()
+
+	log.Printf("action: cleanup_client_state | client_id: %s | handler: aggregate | result: success | reason: finalization_complete",
+		clientID)
 }
 
 // publishBatches publishes all batches, using custom routing keys when provided

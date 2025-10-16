@@ -23,4 +23,9 @@ type Joiner interface {
 
 	// AcceptsAggregateType checks if this joiner accepts the given aggregate data type
 	AcceptsAggregateType(datasetType protocol.DatasetType) bool
+
+	// Cleanup releases all resources held by this joiner instance
+	// This includes clearing reference data maps and closing any open file descriptors
+	// Called after EOF processing to prevent memory leaks
+	Cleanup() error
 }

@@ -97,3 +97,14 @@ func (j *Q4StoreJoiner) AcceptsReferenceType(datasetType protocol.DatasetType) b
 func (j *Q4StoreJoiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ4AggWithUser
 }
+
+// Cleanup releases all resources held by this joiner
+func (j *Q4StoreJoiner) Cleanup() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	// Clear stores map to release memory
+	j.stores = nil
+
+	return nil
+}

@@ -201,3 +201,14 @@ func (q *Q4Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]Ba
 
 	return batchesToPublish, nil
 }
+
+// Cleanup releases all resources held by this aggregate
+func (a *Q4Aggregate) Cleanup() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Clear map to release memory
+	a.storeUserCounts = nil
+
+	return nil
+}

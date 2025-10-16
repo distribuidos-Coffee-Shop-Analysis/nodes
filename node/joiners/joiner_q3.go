@@ -99,3 +99,14 @@ func (j *Q3Joiner) AcceptsReferenceType(datasetType protocol.DatasetType) bool {
 func (j *Q3Joiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ3Agg
 }
+
+// Cleanup releases all resources held by this joiner
+func (j *Q3Joiner) Cleanup() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	// Clear stores map to release memory
+	j.stores = nil
+
+	return nil
+}

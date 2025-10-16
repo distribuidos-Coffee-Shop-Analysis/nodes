@@ -28,4 +28,9 @@ type Aggregate interface {
 	// Returns a slice of batches to publish (can be 1 for simple aggregates, N for partitioned)
 	// clientID is propagated from incoming messages to route responses back to the correct client
 	GetBatchesToPublish(batchIndex int, clientID string) ([]BatchToPublish, error)
+
+	// Cleanup releases all resources held by this aggregate instance
+	// This includes clearing maps, slices, and closing any open file descriptors
+	// Called after finalization to prevent memory leaks
+	Cleanup() error
 }

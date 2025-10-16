@@ -1,13 +1,16 @@
 {
   "role": "q4_join_stores",
+  "shared_queue_name": "joined_users_stores_q4",
   "bindings": [
     {
       "exchange": "q4_joined_users_exchange",
-      "routing_key": ""
+      "routing_key": "",
+      "use_shared_queue": true
     },
     {
       "exchange": "stores_exchange",
-      "routing_key": ""
+      "routing_key": "",
+      "use_shared_queue": false
     }
   ],
   "outputs": {

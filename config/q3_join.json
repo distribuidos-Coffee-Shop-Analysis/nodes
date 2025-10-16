@@ -1,13 +1,16 @@
 {
   "role": "q3_join",
+  "shared_queue_name": "aggregated_data_q3",
   "bindings": [
     {
       "exchange": "q3_aggregated_exchange",
-      "routing_key": ""
+      "routing_key": "",
+      "use_shared_queue": true
     },
     {
       "exchange": "stores_exchange",
-      "routing_key": ""
+      "routing_key": "",
+      "use_shared_queue": false
     }
   ],
   "outputs": {

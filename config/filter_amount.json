@@ -1,10 +1,11 @@
 {
   "role": "filter_amount",
-  "input_queue_name": "q1_queue",
+  "shared_queue_name": "q1_queue",
   "bindings": [
     {
       "exchange": "transactions_filtered_hour_exchange",
-      "routing_key": ""
+      "routing_key": "",
+      "use_shared_queue": true
     }
   ],
   "outputs": {

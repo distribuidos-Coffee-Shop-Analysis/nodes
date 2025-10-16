@@ -1,10 +1,11 @@
 {
   "role": "q4_group",
-  "input_queue_name": "q4_queue",
+  "shared_queue_name": "q4_queue",
   "bindings": [
     {
       "exchange": "transactions_exchange",
-      "routing_key": ""
+      "routing_key": "",
+      "use_shared_queue": true
     }
   ],
   "outputs": {

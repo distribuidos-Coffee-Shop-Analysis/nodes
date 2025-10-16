@@ -117,13 +117,8 @@ func (j *Q2Joiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ2Agg
 }
 
-// Cleanup releases all resources held by this joiner
+// Cleanup is a no-op for Q2Joiner
+// Menu items dataset is small (~100 items) and kept in memory for potential future queries
 func (j *Q2Joiner) Cleanup() error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-
-	// Clear menu items map to release memory
-	j.menuItems = nil
-
 	return nil
 }

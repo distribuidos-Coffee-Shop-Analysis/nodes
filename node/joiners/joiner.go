@@ -24,8 +24,12 @@ type Joiner interface {
 	// AcceptsAggregateType checks if this joiner accepts the given aggregate data type
 	AcceptsAggregateType(datasetType protocol.DatasetType) bool
 
-	// Cleanup releases all resources held by this joiner instance
-	// This includes clearing reference data maps and closing any open file descriptors
-	// Called after EOF processing to prevent memory leaks
+	// Cleanup releases resources held by this joiner instance
+	// Called after all aggregate batches are processed (EOF threshold reached)
+	// Implementation is joiner-specific:
+	//   - Q4UserJoiner: Clears users map (large dataset - GBs of memory)
+	//   - Q4StoreJoiner: No-op (stores dataset is tiny - ~10 rows)
+	//   - Other joiners: No-op (reference data is small and kept)
+	// Returns nil for no-op implementations
 	Cleanup() error
 }

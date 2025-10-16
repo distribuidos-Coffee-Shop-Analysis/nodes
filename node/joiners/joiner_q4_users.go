@@ -102,13 +102,19 @@ func (j *Q4UserJoiner) AcceptsAggregateType(datasetType protocol.DatasetType) bo
 	return datasetType == protocol.DatasetTypeQ4Agg
 }
 
-// Cleanup releases all resources held by this joiner
+// Cleanup releases memory held by the users map
+// Users dataset is HUGE (millions of rows, GBs of memory) so this is critical
+// Called after EOF is received and all batches are processed
 func (j *Q4UserJoiner) Cleanup() error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	// Clear users map to release memory
+	log.Printf("action: q4_user_joiner_cleanup | users_count: %d | releasing_memory", len(j.users))
+
+	// Clear users map to release memory (GBs)
 	j.users = nil
+
+	log.Printf("action: q4_user_joiner_cleanup | result: success")
 
 	return nil
 }

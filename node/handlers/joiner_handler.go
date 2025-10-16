@@ -209,11 +209,25 @@ func (h *JoinerHandler) processAggregatedData(state *JoinerClientState, batchMes
 	log.Printf("action: joiner_publish | client_id: %s | joiner: %s | result: success | batch_index: %d | joined_records: %d | eof: %t",
 		clientID, state.joiner.Name(), batchMessage.BatchIndex, len(joinedRecords), batchMessage.EOF)
 
+	// Cleanup when EOF received - all joins for this client are complete
+	if batchMessage.EOF {
+		log.Printf("action: joiner_eof_received | client_id: %s | joiner: %s", clientID, state.joiner.Name())
+
+		if err := state.joiner.Cleanup(); err != nil {
+			log.Printf("action: joiner_cleanup | client_id: %s | result: fail | error: %v", clientID, err)
+		} else {
+			log.Printf("action: joiner_cleanup | client_id: %s | result: success", clientID)
+		}
+
+		// // Remove client state from handler's map to release handler-level memory
+		// h.statesMu.Lock()
+		// delete(h.states, clientID)
+		// h.statesMu.Unlock()
+	}
+
 	msg.Ack(false)
 	return nil
-}
-
-// handleAggregatedData processes aggregated data - buffers if reference data not ready, or joins immediately
+} // handleAggregatedData processes aggregated data - buffers if reference data not ready, or joins immediately
 func (h *JoinerHandler) handleAggregatedData(state *JoinerClientState, batchMessage *protocol.BatchMessage,
 	connection *amqp091.Connection, wiring *common.NodeWiring, msg amqp091.Delivery, clientID string) error {
 
@@ -254,26 +268,4 @@ func (h *JoinerHandler) createOutputBatch(state *JoinerClientState, batchIndex i
 		Records:     records,
 		EOF:         eof,
 	}
-}
-
-// cleanupClientState removes a client's state from memory after EOF processing
-// Calls the joiner's Cleanup() method to release resources, then removes the state
-func (h *JoinerHandler) cleanupClientState(clientID string, state *JoinerClientState) {
-	// Let the joiner clean up its own resources (maps, file descriptors, etc.)
-	if err := state.joiner.Cleanup(); err != nil {
-		log.Printf("action: joiner_cleanup | client_id: %s | result: fail | error: %v", clientID, err)
-	}
-
-	// Clear buffered batches
-	state.mu.Lock()
-	state.bufferedAggregateBatches = nil
-	state.mu.Unlock()
-
-	// Remove the entire client state from the map
-	h.statesMu.Lock()
-	delete(h.states, clientID)
-	h.statesMu.Unlock()
-
-	log.Printf("action: cleanup_client_state | client_id: %s | handler: joiner | result: success | reason: eof_processed",
-		clientID)
 }

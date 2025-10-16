@@ -1,6 +1,6 @@
 {
   "role": "q4_aggregate",
-  "shared_queue_name": "aggregated_data_q4",
+  "shared_queue_name": "grouped_data_q4",
   "bindings": [
     {
       "exchange": "q4_grouped_exchange",

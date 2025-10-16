@@ -66,23 +66,23 @@ func (qm *QueueManager) Connect() error {
 	}
 
 	// Declare and bind queues for each binding
-	// - If UseSharedQueue=true: all nodes use the same queue to consume from
-	// - If UseSharedQueue=false and multiple bindings: each binding gets its own queue with suffix
-	// - If UseSharedQueue=false and single binding: use base queue name (no suffix)
+	// - If UseSharedQueue=true: use SharedQueueName (all nodes consume from same queue)
+	// - If UseSharedQueue=false and multiple bindings: use IndividualQueueName + suffix (e.g., role.nodeID_0, role.nodeID_1)
+	// - If UseSharedQueue=false and single binding: use IndividualQueueName (e.g., role.nodeID)
 	for i, b := range qm.Wiring.Bindings {
 		var queueName string
 
 		if b.UseSharedQueue {
 			// Shared queue: all nodes consume from the same queue
-			queueName = qm.Wiring.QueueName
+			queueName = qm.Wiring.SharedQueueName
 		} else {
 			// Individual queue per node
 			if len(qm.Wiring.Bindings) > 1 {
-				// Multiple bindings: add suffix to differentiate
-				queueName = fmt.Sprintf("%s_%d", qm.Wiring.QueueName, i)
+				// Multiple bindings without shared queue: add suffix to differentiate
+				queueName = fmt.Sprintf("%s_%d", qm.Wiring.IndividualQueueName, i)
 			} else {
-				// Single binding: use base name (backwards compatibility)
-				queueName = qm.Wiring.QueueName
+				// Single binding: use base name
+				queueName = qm.Wiring.IndividualQueueName
 			}
 		}
 
@@ -131,16 +131,16 @@ func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessag
 		// Determine queue name based on binding configuration
 		var queueName string
 		if b.UseSharedQueue {
-			// Shared queue: all joiner nodes consume from the same queue
-			queueName = qm.Wiring.QueueName
+			// Shared queue: all nodes consume from the same queue
+			queueName = qm.Wiring.SharedQueueName
 		} else {
 			// Individual queue per node
 			if len(qm.Wiring.Bindings) > 1 {
-				// Multiple bindings: add suffix to differentiate
-				queueName = fmt.Sprintf("%s_%d", qm.Wiring.QueueName, i)
+				// Multiple bindings without shared queue: add suffix to differentiate
+				queueName = fmt.Sprintf("%s_%d", qm.Wiring.IndividualQueueName, i)
 			} else {
-				// Single binding: use base name (backwards compatibility)
-				queueName = qm.Wiring.QueueName
+				// Single binding: use base name
+				queueName = qm.Wiring.IndividualQueueName
 			}
 		}
 

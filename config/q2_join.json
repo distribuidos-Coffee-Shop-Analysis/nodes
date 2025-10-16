@@ -1,6 +1,6 @@
 {
   "role": "q2_join",
-  "input_queue_name": "aggregated_data_q2",
+  "shared_queue_name": "aggregated_data_q2",
   "bindings": [
     {
       "exchange": "q2_aggregated_exchange",

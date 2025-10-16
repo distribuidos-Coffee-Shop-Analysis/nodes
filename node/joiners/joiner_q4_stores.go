@@ -50,7 +50,7 @@ func (j *Q4StoreJoiner) StoreReferenceDataset(records []protocol.Record) error {
 }
 
 // PerformJoin joins Q4 user-joined data with stored store information to produce final output
-func (j *Q4StoreJoiner) PerformJoin(userJoinedRecords []protocol.Record) ([]protocol.Record, error) {
+func (j *Q4StoreJoiner) PerformJoin(userJoinedRecords []protocol.Record, clientId string) ([]protocol.Record, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -77,8 +77,8 @@ func (j *Q4StoreJoiner) PerformJoin(userJoinedRecords []protocol.Record) ([]prot
 		joinedRecords = append(joinedRecords, finalRecord)
 	}
 
-	log.Printf("action: q4_store_join_complete | input: %d | joined: %d",
-		len(userJoinedRecords), len(joinedRecords))
+	log.Printf("action: q4_store_join_complete | client_id: %s | input: %d | joined: %d",
+		clientId, len(userJoinedRecords), len(joinedRecords))
 
 	return joinedRecords, nil
 }
@@ -96,4 +96,10 @@ func (j *Q4StoreJoiner) AcceptsReferenceType(datasetType protocol.DatasetType) b
 // AcceptsAggregateType checks if this joiner accepts Q4 user-joined data
 func (j *Q4StoreJoiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ4AggWithUser
+}
+
+// Cleanup is a no-op for Q4StoreJoiner
+// Stores dataset is tiny (~10 stores) and kept in memory for potential future queries
+func (j *Q4StoreJoiner) Cleanup() error {
+	return nil
 }

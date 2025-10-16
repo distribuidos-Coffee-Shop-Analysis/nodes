@@ -95,8 +95,8 @@ func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 	return nil
 }
 
-func (q *Q4Aggregate) Finalize() ([]protocol.Record, error) {
-	log.Printf("action: q4_finalize_start | stores: %d", len(q.storeUserCounts))
+func (q *Q4Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
+	log.Printf("action: q4_finalize_start | client_id: %s | stores: %d", clientID, len(q.storeUserCounts))
 
 	var results []protocol.Record
 
@@ -144,7 +144,7 @@ func (q *Q4Aggregate) Finalize() ([]protocol.Record, error) {
 		}
 	}
 
-	log.Printf("action: q4_finalize_complete | total_results: %d", len(results))
+	log.Printf("action: q4_finalize_complete | client_id: %s | total_results: %d", clientID, len(results))
 
 	return results, nil
 }
@@ -156,7 +156,7 @@ func (q *Q4Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]Ba
 	cfg := common.GetConfig()
 	joinersCount := cfg.GetQ4JoinersCount()
 
-	results, err := q.Finalize()
+	results, err := q.Finalize(clientID)
 	if err != nil {
 		return nil, err
 	}
@@ -200,4 +200,15 @@ func (q *Q4Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]Ba
 	}
 
 	return batchesToPublish, nil
+}
+
+// Cleanup releases all resources held by this aggregate
+func (a *Q4Aggregate) Cleanup() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Clear map to release memory
+	a.storeUserCounts = nil
+
+	return nil
 }

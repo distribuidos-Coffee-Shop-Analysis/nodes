@@ -60,26 +60,33 @@ func NewHandler(role common.NodeRole) Handler {
 		groupby := groupbys.NewQ2GroupBy()
 		return handlers.NewGroupByHandler(groupby)
 	case common.RoleAggregateQ2:
-		aggregate := aggregates.NewQ2Aggregate()
-		return handlers.NewAggregateHandler(aggregate)
+		return handlers.NewAggregateHandler(func() aggregates.Aggregate {
+			return aggregates.NewQ2Aggregate()
+		})
 	case common.RoleAggregateQ3:
-		aggregate := aggregates.NewQ3Aggregate()
-		return handlers.NewAggregateHandler(aggregate)
+		return handlers.NewAggregateHandler(func() aggregates.Aggregate {
+			return aggregates.NewQ3Aggregate()
+		})
 	case common.RoleAggregateQ4:
-		aggregate := aggregates.NewQ4Aggregate()
-		return handlers.NewAggregateHandler(aggregate)
+		return handlers.NewAggregateHandler(func() aggregates.Aggregate {
+			return aggregates.NewQ4Aggregate()
+		})
 	case common.RoleJoinerQ2:
-		joiner := joiners.NewQ2Joiner()
-		return handlers.NewJoinerHandler(joiner)
+		return handlers.NewJoinerHandler(func() joiners.Joiner {
+			return joiners.NewQ2Joiner()
+		})
 	case common.RoleJoinerQ3:
-		joiner := joiners.NewQ3Joiner()
-		return handlers.NewJoinerHandler(joiner)
+		return handlers.NewJoinerHandler(func() joiners.Joiner {
+			return joiners.NewQ3Joiner()
+		})
 	case common.RoleJoinerQ4U:
-		joiner := joiners.NewQ4UserJoiner()
-		return handlers.NewJoinerHandler(joiner)
+		return handlers.NewJoinerHandler(func() joiners.Joiner {
+			return joiners.NewQ4UserJoiner()
+		})
 	case common.RoleJoinerQ4S:
-		joiner := joiners.NewQ4StoreJoiner()
-		return handlers.NewJoinerHandler(joiner)
+		return handlers.NewJoinerHandler(func() joiners.Joiner {
+			return joiners.NewQ4StoreJoiner()
+		})
 	default:
 		panic("unknown role for handler")
 	}

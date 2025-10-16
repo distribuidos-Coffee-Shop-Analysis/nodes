@@ -50,7 +50,7 @@ func (j *Q2Joiner) StoreReferenceDataset(records []protocol.Record) error {
 }
 
 // PerformJoin joins Q2 aggregated data with stored menu items
-func (j *Q2Joiner) PerformJoin(aggregatedRecords []protocol.Record) ([]protocol.Record, error) {
+func (j *Q2Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId string) ([]protocol.Record, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -62,7 +62,7 @@ func (j *Q2Joiner) PerformJoin(aggregatedRecords []protocol.Record) ([]protocol.
 			// Join best selling data with menu item names
 			menuItem, exists := j.menuItems[aggRecord.ItemID]
 			if !exists {
-				log.Printf("action: q2_join_warning | item_id: %s | error: menu_item_not_found", aggRecord.ItemID)
+				log.Printf("action: q2_join_warning | client_id: %s | item_id: %s | error: menu_item_not_found", clientId, aggRecord.ItemID)
 				continue // Skip records without matching menu items
 			}
 
@@ -73,14 +73,14 @@ func (j *Q2Joiner) PerformJoin(aggregatedRecords []protocol.Record) ([]protocol.
 			}
 			joinedRecords = append(joinedRecords, joinedRecord)
 
-			log.Printf("action: q2_join_best_selling | item_id: %s | item_name: %s | qty: %s",
-				aggRecord.ItemID, menuItem.ItemName, aggRecord.SellingsQty)
+			log.Printf("action: q2_join_best_selling | client_id: %s | item_id: %s | item_name: %s | qty: %s",
+				clientId, aggRecord.ItemID, menuItem.ItemName, aggRecord.SellingsQty)
 
 		case *protocol.Q2MostProfitsRecord:
 			// Join most profitable data with menu item names
 			menuItem, exists := j.menuItems[aggRecord.ItemID]
 			if !exists {
-				log.Printf("action: q2_join_warning | item_id: %s | error: menu_item_not_found", aggRecord.ItemID)
+				log.Printf("action: q2_join_warning | client_id: %s | item_id: %s | error: menu_item_not_found", clientId, aggRecord.ItemID)
 				continue // Skip records without matching menu items
 			}
 
@@ -91,8 +91,8 @@ func (j *Q2Joiner) PerformJoin(aggregatedRecords []protocol.Record) ([]protocol.
 			}
 			joinedRecords = append(joinedRecords, joinedRecord)
 
-			log.Printf("action: q2_join_most_profits | item_id: %s | item_name: %s | profit: %s",
-				aggRecord.ItemID, menuItem.ItemName, aggRecord.ProfitSum)
+			log.Printf("action: q2_join_most_profits | client_id: %s | item_id: %s | item_name: %s | profit: %s",
+				clientId, aggRecord.ItemID, menuItem.ItemName, aggRecord.ProfitSum)
 
 		default:
 			return nil, fmt.Errorf("unsupported Q2 aggregated record type: %T", record)
@@ -115,4 +115,10 @@ func (j *Q2Joiner) AcceptsReferenceType(datasetType protocol.DatasetType) bool {
 // AcceptsAggregateType checks if this joiner accepts Q2 aggregate data
 func (j *Q2Joiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ2Agg
+}
+
+// Cleanup is a no-op for Q2Joiner
+// Menu items dataset is small (~100 items) and kept in memory for potential future queries
+func (j *Q2Joiner) Cleanup() error {
+	return nil
 }

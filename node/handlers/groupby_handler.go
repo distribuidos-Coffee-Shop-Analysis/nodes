@@ -12,10 +12,12 @@ import (
 )
 
 type GroupByHandler struct {
-	groupby groupbys.RecordGroupBy
+	groupby groupbys.GroupBy
+	pub     *middleware.Publisher
+	pubMu   sync.Mutex
 }
 
-func NewGroupByHandler(groupby groupbys.RecordGroupBy) *GroupByHandler {
+func NewGroupByHandler(groupby groupbys.GroupBy) *GroupByHandler {
 	return &GroupByHandler{
 		groupby: groupby,
 	}
@@ -27,7 +29,16 @@ func (h *GroupByHandler) Name() string {
 
 // StartHandler starts the groupby handler
 func (h *GroupByHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
-	err := queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
+	// Create ONE publisher/channel for this handler and reuse it
+	pub, err := middleware.NewPublisher(queueManager.Connection, queueManager.Wiring)
+	if err != nil {
+		log.Printf("action: create_publisher | result: fail | error: %v", err)
+		return err
+	}
+	h.pub = pub
+	log.Printf("action: create_publisher | result: success | handler: %s", h.Name())
+
+	err = queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
 		h.Handle(batchMessage, queueManager.Connection,
 			queueManager.Wiring, clientWg, delivery)
 	})
@@ -56,20 +67,16 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 
 	groupByBatch := h.groupby.NewGroupByBatch(batchIndex, groupedRecords, batchMessage.EOF, batchMessage.ClientID)
 
-	publisher, err := middleware.NewPublisher(connection, wiring)
-	if err != nil {
-		log.Printf("action: create_publisher | groupby: %s | result: fail | error: %v", h.groupby.Name(), err)
-		msg.Nack(false, true)
-		return err
-	}
+	// Use the SHARED publisher (protected by mutex)
+	h.pubMu.Lock()
+	err = h.pub.SendToDatasetOutputExchanges(groupByBatch)
+	h.pubMu.Unlock()
 
-	if err := publisher.SendToDatasetOutputExchanges(groupByBatch); err != nil {
+	if err != nil {
 		log.Printf("action: groupby_publish | groupby: %s | result: fail | error: %v", h.groupby.Name(), err)
 		msg.Nack(false, true)
 		return err
 	}
-
-	publisher.Close()
 
 	msg.Ack(false) // Acknowledge msg
 

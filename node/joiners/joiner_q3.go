@@ -50,7 +50,7 @@ func (j *Q3Joiner) StoreReferenceDataset(records []protocol.Record) error {
 }
 
 // PerformJoin joins Q3 aggregated data with stored store information
-func (j *Q3Joiner) PerformJoin(aggregatedRecords []protocol.Record) ([]protocol.Record, error) {
+func (j *Q3Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId string) ([]protocol.Record, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -65,7 +65,7 @@ func (j *Q3Joiner) PerformJoin(aggregatedRecords []protocol.Record) ([]protocol.
 		// Join aggregated data with store names
 		storeRecord, exists := j.stores[aggRecord.StoreID]
 		if !exists {
-			log.Printf("action: q3_join_warning | store_id: %s | error: store_not_found", aggRecord.StoreID)
+			log.Printf("action: q3_join_warning | client_id: %s | store_id: %s | error: store_not_found", clientId, aggRecord.StoreID)
 			continue // Skip records without matching stores
 		}
 
@@ -76,11 +76,11 @@ func (j *Q3Joiner) PerformJoin(aggregatedRecords []protocol.Record) ([]protocol.
 		}
 		joinedRecords = append(joinedRecords, joinedRecord)
 
-		log.Printf("action: q3_join_success | year_half: %s | store_id: %s | store_name: %s | tpv: %s",
-			aggRecord.YearHalf, aggRecord.StoreID, storeRecord.StoreName, aggRecord.TPV)
+		log.Printf("action: q3_join_success | client_id: %s | year_half: %s | store_id: %s | store_name: %s | tpv: %s",
+			clientId, aggRecord.YearHalf, aggRecord.StoreID, storeRecord.StoreName, aggRecord.TPV)
 	}
 
-	log.Printf("action: q3_join_complete | total_joined: %d", len(joinedRecords))
+	log.Printf("action: q3_join_complete | client_id: %s | total_joined: %d", clientId, len(joinedRecords))
 
 	return joinedRecords, nil
 }
@@ -98,4 +98,10 @@ func (j *Q3Joiner) AcceptsReferenceType(datasetType protocol.DatasetType) bool {
 // AcceptsAggregateType checks if this joiner accepts Q3 aggregate data
 func (j *Q3Joiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ3Agg
+}
+
+// Cleanup is a no-op for Q3Joiner
+// Stores dataset is tiny (~10 stores) and kept in memory for potential future queries
+func (j *Q3Joiner) Cleanup() error {
+	return nil
 }

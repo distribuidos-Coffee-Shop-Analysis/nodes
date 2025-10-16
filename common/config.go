@@ -162,8 +162,9 @@ const (
 )
 
 type Binding struct {
-	Exchange   string
-	RoutingKey string
+	Exchange       string
+	RoutingKey     string
+	UseSharedQueue bool `json:"use_shared_queue"`
 }
 
 type OutputRoute struct {
@@ -172,18 +173,19 @@ type OutputRoute struct {
 }
 
 type NodeWiring struct {
-	Role         NodeRole
-	NodeID       string
-	QueueName    string                               // se calcula role.nodeID
-	Bindings     []Binding                            // de dónde leo
-	Outputs      map[protocol.DatasetType]OutputRoute // a dónde publico por dataset
-	DeclareExchs []string                             // exchanges a declarar
+	Role                NodeRole
+	NodeID              string
+	SharedQueueName     string                               // Queue name for shared consumption (use_shared_queue=true)
+	IndividualQueueName string                               // Queue name for individual consumption (use_shared_queue=false), format: role.nodeID
+	Bindings            []Binding                            // de dónde leo
+	Outputs             map[protocol.DatasetType]OutputRoute // a dónde publico por dataset
+	DeclareExchs        []string                             // exchanges a declarar
 }
 
 // JSON configuration for node wiring
 type WiringConfig struct {
 	Role             string                 `json:"role"`
-	InputQueueName   string                 `json:"input_queue_name"`
+	SharedQueueName  string                 `json:"shared_queue_name"` // Queue name for shared consumption (optional)
 	Bindings         []Binding              `json:"bindings"`
 	Outputs          map[string]OutputRoute `json:"outputs"`
 	DeclareExchanges []string               `json:"declare_exchanges"`
@@ -207,10 +209,11 @@ func BuildWiringFromConfig(configPath string, nodeID string) (*NodeWiring, error
 		outputs[datasetType] = route
 	}
 
-	queueName := config.InputQueueName
-	if queueName == "" {
-		queueName = config.Role + "." + nodeID
-	}
+	// Shared queue name (for use_shared_queue=true bindings)
+	sharedQueueName := config.SharedQueueName
+
+	// Individual queue name (for use_shared_queue=false bindings)
+	individualQueueName := config.Role + "." + nodeID
 
 	// Special handling for Q4 User Joiner: generate dynamic routing key based on NODE_ID
 	bindings := config.Bindings
@@ -248,12 +251,13 @@ func BuildWiringFromConfig(configPath string, nodeID string) (*NodeWiring, error
 	}
 
 	return &NodeWiring{
-		Role:         NodeRole(config.Role),
-		NodeID:       nodeID,
-		QueueName:    queueName,
-		Bindings:     bindings,
-		Outputs:      outputs,
-		DeclareExchs: config.DeclareExchanges,
+		Role:                NodeRole(config.Role),
+		NodeID:              nodeID,
+		SharedQueueName:     sharedQueueName,
+		IndividualQueueName: individualQueueName,
+		Bindings:            bindings,
+		Outputs:             outputs,
+		DeclareExchs:        config.DeclareExchanges,
 	}, nil
 }
 

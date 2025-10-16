@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	"log"
 	"sync"
 
@@ -20,33 +19,83 @@ type bufferedBatch struct {
 	delivery     amqp091.Delivery
 }
 
-// JoinerHandler handles join operations between aggregated data and reference data
-type JoinerHandler struct {
-	joiner joiners.RecordJoiner
-
-	// Synchronization state
+// JoinerClientState holds per-client state for joiner operations
+type JoinerClientState struct {
 	mu                       sync.Mutex
-	referenceDatasetComplete bool            // Flag indicating if reference dataset EOF was received
-	bufferedAggregateBatches []bufferedBatch // Buffer for aggregate batches that arrive before the reference dataset is complete
+	joiner                   joiners.Joiner
+	referenceDatasetComplete bool
+	bufferedAggregateBatches []bufferedBatch
 }
 
-// NewJoinerHandler creates a new joiner handler with the specified joiner
-func NewJoinerHandler(joiner joiners.RecordJoiner) *JoinerHandler {
+// JoinerHandler manages join operations for multiple clients
+type JoinerHandler struct {
+	newJoiner func() joiners.Joiner         // Factory function to create new joiners per client
+	states    map[string]*JoinerClientState // map[string]*JoinerClientState - keyed by clientID
+	statesMu  sync.RWMutex                  // Protects states map
+
+	// Reusable publisher to avoid channel exhaustion
+	pub   *middleware.Publisher
+	pubMu sync.Mutex
+}
+
+// NewJoinerHandler creates a new joiner handler with a factory function
+func NewJoinerHandler(newJoiner func() joiners.Joiner) *JoinerHandler {
 	return &JoinerHandler{
-		joiner:                   joiner,
-		referenceDatasetComplete: false,
-		bufferedAggregateBatches: make([]bufferedBatch, 0),
+		newJoiner: newJoiner,
+		states:    make(map[string]*JoinerClientState),
 	}
 }
 
 // Name returns the handler name
 func (h *JoinerHandler) Name() string {
-	return "joiner_" + h.joiner.Name()
+	return "joiner_" + h.sampleName()
+}
+
+// sampleName instantiates a temporary joiner just to read its name
+func (h *JoinerHandler) sampleName() string {
+	return h.newJoiner().Name()
+}
+
+// getState retrieves or creates the state for a specific client
+func (h *JoinerHandler) getState(clientID string) *JoinerClientState {
+	// Try read-only access first (common case)
+	h.statesMu.RLock()
+	if state, ok := h.states[clientID]; ok {
+		h.statesMu.RUnlock()
+		return state
+	}
+	h.statesMu.RUnlock()
+
+	// Need to create new state - acquire write lock
+	h.statesMu.Lock()
+	defer h.statesMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if state, ok := h.states[clientID]; ok {
+		return state
+	}
+
+	// Create new state for this client
+	st := &JoinerClientState{
+		joiner:                   h.newJoiner(),
+		referenceDatasetComplete: false,
+		bufferedAggregateBatches: make([]bufferedBatch, 0),
+	}
+	h.states[clientID] = st
+	return st
 }
 
 // StartHandler starts the joiner handler - consumes from multiple exchanges
 func (h *JoinerHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
-	err := queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
+	pub, err := middleware.NewPublisher(queueManager.Connection, queueManager.Wiring)
+	if err != nil {
+		log.Printf("action: create_publisher | result: fail | error: %v", err)
+		return err
+	}
+	h.pub = pub
+	log.Printf("action: create_publisher | result: success | handler: %s", h.Name())
+
+	err = queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
 		h.Handle(batchMessage, queueManager.Connection, queueManager.Wiring, clientWg, delivery)
 	})
 	if err != nil {
@@ -62,53 +111,63 @@ func (h *JoinerHandler) Handle(batchMessage *protocol.BatchMessage, connection *
 
 	clientWG.Add(1)
 	defer clientWG.Done()
+
+	// Get or create client-specific state
+	clientID := batchMessage.ClientID
+	state := h.getState(clientID)
+
 	// Route message based on dataset type using joiner's acceptance methods
-	if h.joiner.AcceptsReferenceType(batchMessage.DatasetType) {
-		return h.handleReferenceDataset(batchMessage, msg)
-	} else if h.joiner.AcceptsAggregateType(batchMessage.DatasetType) {
-		return h.handleAggregatedData(batchMessage, connection, wiring, msg)
+	if state.joiner.AcceptsReferenceType(batchMessage.DatasetType) {
+		return h.handleReferenceDataset(state, batchMessage, connection, wiring, msg, clientID)
+	} else if state.joiner.AcceptsAggregateType(batchMessage.DatasetType) {
+		return h.handleAggregatedData(state, batchMessage, connection, wiring, msg, clientID)
 	} else {
-		log.Printf("action: joiner_handle | result: fail | error: unsupported dataset type: %s", batchMessage.DatasetType)
-		msg.Nack(false, true)
-		return fmt.Errorf("unsupported dataset type: %s", batchMessage.DatasetType)
+		log.Printf("action: joiner_handle | client_id: %s | result: fail | error: unsupported dataset type: %s",
+			clientID, batchMessage.DatasetType)
+		msg.Ack(false) // Ack to avoid redelivery of unsupported messages
+		return nil
 	}
 }
 
 // handleReferenceDataset processes and stores reference data (e.g., menu items, stores, users)
-func (h *JoinerHandler) handleReferenceDataset(batchMessage *protocol.BatchMessage, msg amqp091.Delivery) error {
+func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMessage *protocol.BatchMessage,
+	connection *amqp091.Connection, wiring *common.NodeWiring, msg amqp091.Delivery, clientID string) error {
 
-	// Store reference data using the joiner's specific logic
-	err := h.joiner.StoreReferenceDataset(batchMessage.Records)
+	// Store reference data using this client's joiner
+	err := state.joiner.StoreReferenceDataset(batchMessage.Records)
 	if err != nil {
-		log.Printf("action: store_reference_data | result: fail | error: %v", err)
+		log.Printf("action: store_reference_data | client_id: %s | joiner: %s | result: fail | error: %v",
+			clientID, state.joiner.Name(), err)
 		msg.Nack(false, true)
 		return err
 	}
 
 	// Check if this is the last batch of reference data (EOF received)
 	if batchMessage.EOF {
-		h.mu.Lock()
-		h.referenceDatasetComplete = true
-		bufferedBatches := h.bufferedAggregateBatches
-		h.bufferedAggregateBatches = make([]bufferedBatch, 0) // Clear buffer
-		h.mu.Unlock()
+		state.mu.Lock()
+		state.referenceDatasetComplete = true
+		bufferedBatches := state.bufferedAggregateBatches
+		state.bufferedAggregateBatches = make([]bufferedBatch, 0) // Clear buffer
+		state.mu.Unlock()
+
+		log.Printf("action: reference_data_complete | client_id: %s | joiner: %s | buffered_batches: %d",
+			clientID, state.joiner.Name(), len(bufferedBatches))
 
 		// Process any buffered aggregate batches that arrived before reference data was complete
 		if len(bufferedBatches) > 0 {
-
 			for i, buffered := range bufferedBatches {
-
 				// Process this buffered batch (perform join and publish)
-				err := h.processAggregatedData(buffered.batchMessage, buffered.connection, buffered.wiring, buffered.delivery)
+				err := h.processAggregatedData(state, buffered.batchMessage, buffered.connection, buffered.wiring, buffered.delivery, clientID)
 				if err != nil {
-					log.Printf("action: process_buffered_batch | result: fail | batch_num: %d | error: %v", i+1, err)
+					log.Printf("action: process_buffered_batch | client_id: %s | joiner: %s | result: fail | batch_num: %d | error: %v",
+						clientID, state.joiner.Name(), i+1, err)
 					// Continue processing other batches even if one fails
 					continue
 				}
 			}
 
-			log.Printf("action: process_buffered_batches_complete | joiner: %s | processed: %d",
-				h.joiner.Name(), len(bufferedBatches))
+			log.Printf("action: process_buffered_batches_complete | client_id: %s | joiner: %s | processed: %d",
+				clientID, state.joiner.Name(), len(bufferedBatches))
 		}
 	}
 
@@ -116,82 +175,94 @@ func (h *JoinerHandler) handleReferenceDataset(batchMessage *protocol.BatchMessa
 	return nil
 }
 
-// processAggregatedData performs the actual join and publishes results (without ACK logic)
-func (h *JoinerHandler) processAggregatedData(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
-	wiring *common.NodeWiring, msg amqp091.Delivery) error {
+// processAggregatedData performs the actual join and publishes results
+func (h *JoinerHandler) processAggregatedData(state *JoinerClientState, batchMessage *protocol.BatchMessage,
+	connection *amqp091.Connection, wiring *common.NodeWiring, msg amqp091.Delivery, clientID string) error {
 
-	log.Printf("action: join_aggregate_data | joiner: %s | records: %d", h.joiner.Name(), len(batchMessage.Records))
+	log.Printf("action: join_aggregate_data | client_id: %s | joiner: %s | records: %d",
+		clientID, state.joiner.Name(), len(batchMessage.Records))
 
-	// Perform join using the joiner's specific logic
-	joinedRecords, err := h.joiner.PerformJoin(batchMessage.Records)
+	// Perform join using this client's joiner
+	joinedRecords, err := state.joiner.PerformJoin(batchMessage.Records, clientID)
 	if err != nil {
-		log.Printf("action: perform_join | result: fail | error: %v", err)
+		log.Printf("action: perform_join | client_id: %s | joiner: %s | result: fail | error: %v",
+			clientID, state.joiner.Name(), err)
 		msg.Nack(false, true)
 		return err
 	}
 
 	// Create output batch with joined data (propagate ClientID)
-	outputBatch := h.createOutputBatch(batchMessage.BatchIndex, joinedRecords, batchMessage.EOF, batchMessage.ClientID)
+	outputBatch := h.createOutputBatch(state, batchMessage.BatchIndex, joinedRecords, batchMessage.EOF, clientID)
 
-	// Publish joined results
-	publisher, err := middleware.NewPublisher(connection, wiring)
+	// Publish joined results using the shared publisher with mutex protection
+	h.pubMu.Lock()
+	err = h.pub.SendToDatasetOutputExchanges(outputBatch)
+	h.pubMu.Unlock()
+
 	if err != nil {
-		log.Printf("action: create_publisher | result: fail | error: %v", err)
-		msg.Nack(false, true)
-		return err
-	}
-	defer publisher.Close()
-
-	if err := publisher.SendToDatasetOutputExchanges(outputBatch); err != nil {
-		log.Printf("action: joiner_publish | result: fail | error: %v", err)
+		log.Printf("action: joiner_publish | client_id: %s | joiner: %s | result: fail | error: %v",
+			clientID, state.joiner.Name(), err)
 		msg.Nack(false, true)
 		return err
 	}
 
-	log.Printf("action: joiner_publish | result: success | batch_index: %d | joined_records: %d | eof: %t",
-		batchMessage.BatchIndex, len(joinedRecords), batchMessage.EOF)
+	log.Printf("action: joiner_publish | client_id: %s | joiner: %s | result: success | batch_index: %d | joined_records: %d | eof: %t",
+		clientID, state.joiner.Name(), batchMessage.BatchIndex, len(joinedRecords), batchMessage.EOF)
+
+	// Cleanup when EOF received - all joins for this client are complete
+	if batchMessage.EOF {
+		log.Printf("action: joiner_eof_received | client_id: %s | joiner: %s", clientID, state.joiner.Name())
+
+		if err := state.joiner.Cleanup(); err != nil {
+			log.Printf("action: joiner_cleanup | client_id: %s | result: fail | error: %v", clientID, err)
+		} else {
+			log.Printf("action: joiner_cleanup | client_id: %s | result: success", clientID)
+		}
+
+		// // Remove client state from handler's map to release handler-level memory
+		// h.statesMu.Lock()
+		// delete(h.states, clientID)
+		// h.statesMu.Unlock()
+	}
 
 	msg.Ack(false)
 	return nil
-}
+} // handleAggregatedData processes aggregated data - buffers if reference data not ready, or joins immediately
+func (h *JoinerHandler) handleAggregatedData(state *JoinerClientState, batchMessage *protocol.BatchMessage,
+	connection *amqp091.Connection, wiring *common.NodeWiring, msg amqp091.Delivery, clientID string) error {
 
-// handleAggregatedData processes aggregated data - buffers if reference data not ready, or joins immediately
-func (h *JoinerHandler) handleAggregatedData(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
-	wiring *common.NodeWiring, msg amqp091.Delivery) error {
-
-	// Check if reference data is complete
-	h.mu.Lock()
-	refDataComplete := h.referenceDatasetComplete
-	h.mu.Unlock()
+	// Check if reference data is complete for this client
+	state.mu.Lock()
+	refDataComplete := state.referenceDatasetComplete
+	state.mu.Unlock()
 
 	if !refDataComplete {
 		// Reference data not ready yet - buffer this aggregate batch
-		h.mu.Lock()
-		h.bufferedAggregateBatches = append(h.bufferedAggregateBatches, bufferedBatch{
+		state.mu.Lock()
+		state.bufferedAggregateBatches = append(state.bufferedAggregateBatches, bufferedBatch{
 			batchMessage: batchMessage,
 			connection:   connection,
 			wiring:       wiring,
 			delivery:     msg,
 		})
-		bufferedCount := len(h.bufferedAggregateBatches)
-		h.mu.Unlock()
+		bufferedCount := len(state.bufferedAggregateBatches)
+		state.mu.Unlock()
 
-		log.Printf("action: buffer_aggregate_batch | joiner: %s | batch_index: %d | buffered_count: %d | reason: reference_data_not_ready",
-			h.joiner.Name(), batchMessage.BatchIndex, bufferedCount)
+		log.Printf("action: buffer_aggregate_batch | client_id: %s | joiner: %s | batch_index: %d | buffered_count: %d | reason: reference_data_not_ready",
+			clientID, state.joiner.Name(), batchMessage.BatchIndex, bufferedCount)
 
 		// Don't ACK yet - will ACK when we process from buffer
 		return nil
 	}
 
-	// Reference data is ready - process immediately
-	return h.processAggregatedData(batchMessage, connection, wiring, msg)
+	return h.processAggregatedData(state, batchMessage, connection, wiring, msg, clientID)
 }
 
 // createOutputBatch creates the output batch with the correct dataset type
-func (h *JoinerHandler) createOutputBatch(batchIndex int, records []protocol.Record, eof bool, clientID string) *protocol.BatchMessage {
+func (h *JoinerHandler) createOutputBatch(state *JoinerClientState, batchIndex int, records []protocol.Record, eof bool, clientID string) *protocol.BatchMessage {
 	return &protocol.BatchMessage{
 		Type:        protocol.MessageTypeBatch,
-		DatasetType: h.joiner.GetOutputDatasetType(),
+		DatasetType: state.joiner.GetOutputDatasetType(),
 		ClientID:    clientID,
 		BatchIndex:  batchIndex,
 		Records:     records,

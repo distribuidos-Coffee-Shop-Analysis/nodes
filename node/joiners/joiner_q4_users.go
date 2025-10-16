@@ -49,7 +49,7 @@ func (j *Q4UserJoiner) StoreReferenceDataset(records []protocol.Record) error {
 }
 
 // PerformJoin joins Q4 aggregated data with stored user information
-func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record) ([]protocol.Record, error) {
+func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record, clientId string) ([]protocol.Record, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -67,8 +67,8 @@ func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record) ([]proto
 		// Join aggregated data with user information (lookup birthdate)
 		birthdate, exists := j.users[normalizedUserID]
 		if !exists {
-			log.Printf("action: q4_user_join_missing | user_id: %s | store_id: %s",
-				normalizedUserID, aggRecord.StoreID)
+			log.Printf("action: q4_user_join_missing | client_id: %s | user_id: %s | store_id: %s",
+				clientId, normalizedUserID, aggRecord.StoreID)
 			continue // Skip records without matching users
 		}
 
@@ -81,8 +81,8 @@ func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record) ([]proto
 		joinedRecords = append(joinedRecords, joinedRecord)
 	}
 
-	log.Printf("action: q4_user_join_complete | input: %d | joined: %d",
-		len(aggregatedRecords), len(joinedRecords))
+	log.Printf("action: q4_user_join_complete | client_id: %s | input: %d | joined: %d",
+		clientId, len(aggregatedRecords), len(joinedRecords))
 
 	return joinedRecords, nil
 }
@@ -100,4 +100,21 @@ func (j *Q4UserJoiner) AcceptsReferenceType(datasetType protocol.DatasetType) bo
 // AcceptsAggregateType checks if this joiner accepts Q4 aggregate data
 func (j *Q4UserJoiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ4Agg
+}
+
+// Cleanup releases memory held by the users map
+// Users dataset is HUGE (millions of rows, GBs of memory) so this is critical
+// Called after EOF is received and all batches are processed
+func (j *Q4UserJoiner) Cleanup() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	log.Printf("action: q4_user_joiner_cleanup | users_count: %d | releasing_memory", len(j.users))
+
+	// Clear users map to release memory (GBs)
+	j.users = nil
+
+	log.Printf("action: q4_user_joiner_cleanup | result: success")
+
+	return nil
 }

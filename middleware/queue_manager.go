@@ -67,15 +67,23 @@ func (qm *QueueManager) Connect() error {
 
 	// Declare and bind queues for each binding
 	// - If UseSharedQueue=true: all nodes use the same queue to consume from
-	// - If UseSharedQueue=false: each node gets its own queue with suffix
+	// - If UseSharedQueue=false and multiple bindings: each binding gets its own queue with suffix
+	// - If UseSharedQueue=false and single binding: use base queue name (no suffix)
 	for i, b := range qm.Wiring.Bindings {
 		var queueName string
 
 		if b.UseSharedQueue {
+			// Shared queue: all nodes consume from the same queue
 			queueName = qm.Wiring.QueueName
 		} else {
-			// Individual queue per node (for stores, menu_items, users, etc.)
-			queueName = fmt.Sprintf("%s_%d", qm.Wiring.QueueName, i)
+			// Individual queue per node
+			if len(qm.Wiring.Bindings) > 1 {
+				// Multiple bindings: add suffix to differentiate
+				queueName = fmt.Sprintf("%s_%d", qm.Wiring.QueueName, i)
+			} else {
+				// Single binding: use base name (backwards compatibility)
+				queueName = qm.Wiring.QueueName
+			}
 		}
 
 		// Declare queue
@@ -123,11 +131,17 @@ func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessag
 		// Determine queue name based on binding configuration
 		var queueName string
 		if b.UseSharedQueue {
-			// shared queue: all joiner nodes consume from the same queue
+			// Shared queue: all joiner nodes consume from the same queue
 			queueName = qm.Wiring.QueueName
 		} else {
-			// individual queue per node (for stores, menu_items, users, etc)
-			queueName = fmt.Sprintf("%s_%d", qm.Wiring.QueueName, i)
+			// Individual queue per node
+			if len(qm.Wiring.Bindings) > 1 {
+				// Multiple bindings: add suffix to differentiate
+				queueName = fmt.Sprintf("%s_%d", qm.Wiring.QueueName, i)
+			} else {
+				// Single binding: use base name (backwards compatibility)
+				queueName = qm.Wiring.QueueName
+			}
 		}
 
 		// Create a dedicated channel for each queue (joiner nodes with multiple bindings)

@@ -1,10 +1,11 @@
 {
   "role": "filter_year",
-  "input_queue_name": "transactions_and_transactionItems_queue",
+  "shared_queue_name": "transactions_and_transactionItems_queue",
   "bindings": [
     {
       "exchange": "transactions_and_transaction_items_exchange",
-      "routing_key": ""
+      "routing_key": "",
+      "use_shared_queue": true
     }
   ],
   "outputs": {

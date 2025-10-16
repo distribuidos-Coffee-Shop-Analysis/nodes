@@ -153,7 +153,6 @@ func (a *Q2Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
 	return result, nil
 }
 
-
 // parseAggregateKey splits the composite key "yearMonth|itemID" into parts
 func parseAggregateKey(key string) []string {
 	parts := make([]string, 2)
@@ -208,11 +207,23 @@ func (a *Q2Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]Ba
 	}
 
 	batch := protocol.NewQ2AggregateBatch(batchIndex, results, clientID, true)
-	
+
 	return []BatchToPublish{
 		{
 			Batch:      batch,
 			RoutingKey: "",
 		},
 	}, nil
+}
+
+// Cleanup releases all resources held by this aggregate
+func (a *Q2Aggregate) Cleanup() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Clear all maps to release memory
+	a.quantityData = nil
+	a.profitData = nil
+
+	return nil
 }

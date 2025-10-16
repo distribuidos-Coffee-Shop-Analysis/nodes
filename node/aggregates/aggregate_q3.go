@@ -5,6 +5,7 @@ import (
 	"log"
 	"strconv"
 	"sync"
+
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
@@ -20,7 +21,7 @@ type Q3Aggregate struct {
 // NewQ3Aggregate creates a new Q3 aggregate processor
 func NewQ3Aggregate() *Q3Aggregate {
 	return &Q3Aggregate{
-		tpvData:         make(map[string]float64),
+		tpvData: make(map[string]float64),
 	}
 }
 
@@ -122,4 +123,15 @@ func (a *Q3Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]Ba
 			RoutingKey: "",
 		},
 	}, nil
+}
+
+// Cleanup releases all resources held by this aggregate
+func (a *Q3Aggregate) Cleanup() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Clear map to release memory
+	a.tpvData = nil
+
+	return nil
 }

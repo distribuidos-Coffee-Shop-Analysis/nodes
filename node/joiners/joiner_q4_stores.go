@@ -97,3 +97,9 @@ func (j *Q4StoreJoiner) AcceptsReferenceType(datasetType protocol.DatasetType) b
 func (j *Q4StoreJoiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ4AggWithUser
 }
+
+// Cleanup is a no-op for Q4StoreJoiner
+// Stores dataset is tiny (~10 stores) and kept in memory for potential future queries
+func (j *Q4StoreJoiner) Cleanup() error {
+	return nil
+}

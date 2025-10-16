@@ -29,8 +29,9 @@ type JoinerClientState struct {
 
 // JoinerHandler manages join operations for multiple clients
 type JoinerHandler struct {
-	newJoiner func() joiners.Joiner // Factory function to create new joiners per client
-	states    sync.Map              // map[string]*JoinerClientState - keyed by clientID
+	newJoiner func() joiners.Joiner         // Factory function to create new joiners per client
+	states    map[string]*JoinerClientState // map[string]*JoinerClientState - keyed by clientID
+	statesMu  sync.RWMutex                  // Protects states map
 
 	// Reusable publisher to avoid channel exhaustion
 	pub   *middleware.Publisher
@@ -41,6 +42,7 @@ type JoinerHandler struct {
 func NewJoinerHandler(newJoiner func() joiners.Joiner) *JoinerHandler {
 	return &JoinerHandler{
 		newJoiner: newJoiner,
+		states:    make(map[string]*JoinerClientState),
 	}
 }
 
@@ -56,8 +58,21 @@ func (h *JoinerHandler) sampleName() string {
 
 // getState retrieves or creates the state for a specific client
 func (h *JoinerHandler) getState(clientID string) *JoinerClientState {
-	if v, ok := h.states.Load(clientID); ok {
-		return v.(*JoinerClientState)
+	// Try read-only access first (common case)
+	h.statesMu.RLock()
+	if state, ok := h.states[clientID]; ok {
+		h.statesMu.RUnlock()
+		return state
+	}
+	h.statesMu.RUnlock()
+
+	// Need to create new state - acquire write lock
+	h.statesMu.Lock()
+	defer h.statesMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if state, ok := h.states[clientID]; ok {
+		return state
 	}
 
 	// Create new state for this client
@@ -66,9 +81,8 @@ func (h *JoinerHandler) getState(clientID string) *JoinerClientState {
 		referenceDatasetComplete: false,
 		bufferedAggregateBatches: make([]bufferedBatch, 0),
 	}
-
-	actual, _ := h.states.LoadOrStore(clientID, st)
-	return actual.(*JoinerClientState)
+	h.states[clientID] = st
+	return st
 }
 
 // StartHandler starts the joiner handler - consumes from multiple exchanges
@@ -195,11 +209,25 @@ func (h *JoinerHandler) processAggregatedData(state *JoinerClientState, batchMes
 	log.Printf("action: joiner_publish | client_id: %s | joiner: %s | result: success | batch_index: %d | joined_records: %d | eof: %t",
 		clientID, state.joiner.Name(), batchMessage.BatchIndex, len(joinedRecords), batchMessage.EOF)
 
+	// Cleanup when EOF received - all joins for this client are complete
+	if batchMessage.EOF {
+		log.Printf("action: joiner_eof_received | client_id: %s | joiner: %s", clientID, state.joiner.Name())
+
+		if err := state.joiner.Cleanup(); err != nil {
+			log.Printf("action: joiner_cleanup | client_id: %s | result: fail | error: %v", clientID, err)
+		} else {
+			log.Printf("action: joiner_cleanup | client_id: %s | result: success", clientID)
+		}
+
+		// // Remove client state from handler's map to release handler-level memory
+		// h.statesMu.Lock()
+		// delete(h.states, clientID)
+		// h.statesMu.Unlock()
+	}
+
 	msg.Ack(false)
 	return nil
-}
-
-// handleAggregatedData processes aggregated data - buffers if reference data not ready, or joins immediately
+} // handleAggregatedData processes aggregated data - buffers if reference data not ready, or joins immediately
 func (h *JoinerHandler) handleAggregatedData(state *JoinerClientState, batchMessage *protocol.BatchMessage,
 	connection *amqp091.Connection, wiring *common.NodeWiring, msg amqp091.Delivery, clientID string) error {
 
@@ -227,7 +255,6 @@ func (h *JoinerHandler) handleAggregatedData(state *JoinerClientState, batchMess
 		return nil
 	}
 
-	// Reference data is ready - process immediately
 	return h.processAggregatedData(state, batchMessage, connection, wiring, msg, clientID)
 }
 

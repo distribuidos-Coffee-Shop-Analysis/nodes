@@ -99,3 +99,9 @@ func (j *Q3Joiner) AcceptsReferenceType(datasetType protocol.DatasetType) bool {
 func (j *Q3Joiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ3Agg
 }
+
+// Cleanup is a no-op for Q3Joiner
+// Stores dataset is tiny (~10 stores) and kept in memory for potential future queries
+func (j *Q3Joiner) Cleanup() error {
+	return nil
+}

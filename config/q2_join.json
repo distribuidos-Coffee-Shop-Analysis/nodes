@@ -1,13 +1,16 @@
 {
   "role": "q2_join",
+  "shared_queue_name": "aggregated_data_q2",
   "bindings": [
     {
       "exchange": "q2_aggregated_exchange",
-      "routing_key": ""
+      "routing_key": "",
+      "use_shared_queue": true
     },
     {
       "exchange": "menu_items_exchange",
-      "routing_key": ""
+      "routing_key": "",
+      "use_shared_queue": false
     }
   ],
   "outputs": {

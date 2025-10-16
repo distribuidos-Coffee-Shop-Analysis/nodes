@@ -1,9 +1,11 @@
 {
   "role": "q4_aggregate",
+  "shared_queue_name": "grouped_data_q4",
   "bindings": [
     {
       "exchange": "q4_grouped_exchange",
-      "routing_key": ""
+      "routing_key": "",
+      "use_shared_queue": true
     }
   ],
   "outputs": {

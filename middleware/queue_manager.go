@@ -65,10 +65,16 @@ func (qm *QueueManager) Connect() error {
 		}
 	}
 
+	// Declare and bind queues for each binding
+	// - If UseSharedQueue=true: all nodes use the same queue to consume from
+	// - If UseSharedQueue=false: each node gets its own queue with suffix
 	for i, b := range qm.Wiring.Bindings {
-		// Determine queue name: single binding uses base name, multiple bindings add suffix
-		queueName := qm.Wiring.QueueName
-		if len(qm.Wiring.Bindings) > 1 {
+		var queueName string
+
+		if b.UseSharedQueue {
+			queueName = qm.Wiring.QueueName
+		} else {
+			// Individual queue per node (for stores, menu_items, users, etc.)
 			queueName = fmt.Sprintf("%s_%d", qm.Wiring.QueueName, i)
 		}
 
@@ -87,8 +93,8 @@ func (qm *QueueManager) Connect() error {
 			return fmt.Errorf("bind queue %s to exchange %s: %w", q.Name, b.Exchange, err)
 		}
 
-		log.Printf("action: queue_setup | queue: %s | exchange: %s | routing_key: %s | binding_index: %d",
-			queueName, b.Exchange, b.RoutingKey, i)
+		log.Printf("action: queue_setup | queue: %s | exchange: %s | routing_key: %s | binding_index: %d | shared: %v",
+			queueName, b.Exchange, b.RoutingKey, i, b.UseSharedQueue)
 	}
 
 	return nil
@@ -109,15 +115,23 @@ func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessag
 	qm.consuming = true
 
 	// Start consuming from each queue
-	for i := range qm.Wiring.Bindings {
+	for i, b := range qm.Wiring.Bindings {
 		var err error
 
 		dedicatedChannel := qm.channel
-		// Determine queue name: single binding uses base name, multiple bindings add suffix
-		queueName := qm.Wiring.QueueName
-		if len(qm.Wiring.Bindings) > 1 {
+
+		// Determine queue name based on binding configuration
+		var queueName string
+		if b.UseSharedQueue {
+			// shared queue: all joiner nodes consume from the same queue
+			queueName = qm.Wiring.QueueName
+		} else {
+			// individual queue per node (for stores, menu_items, users, etc)
 			queueName = fmt.Sprintf("%s_%d", qm.Wiring.QueueName, i)
-			// Create a dedicated channel for this queue (joiner nodes)
+		}
+
+		// Create a dedicated channel for each queue (joiner nodes with multiple bindings)
+		if len(qm.Wiring.Bindings) > 1 {
 			dedicatedChannel, err = qm.Connection.Channel()
 			if err != nil {
 				log.Printf("action: create_channel | result: fail | queue: %s | error: %v", queueName, err)
@@ -132,7 +146,7 @@ func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessag
 			return err
 		}
 
-		log.Printf("action: start_consuming | result: success | queue: %s", queueName)
+		log.Printf("action: start_consuming | result: success | queue: %s | shared: %v", queueName, b.UseSharedQueue)
 
 		// Process messages from this queue in a separate goroutine
 		go func(qName string, msgChannel <-chan amqp.Delivery) {

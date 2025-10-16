@@ -162,8 +162,9 @@ const (
 )
 
 type Binding struct {
-	Exchange   string
-	RoutingKey string
+	Exchange       string
+	RoutingKey     string
+	UseSharedQueue bool `json:"use_shared_queue"` 
 }
 
 type OutputRoute struct {

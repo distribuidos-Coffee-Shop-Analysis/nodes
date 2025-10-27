@@ -6,22 +6,39 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
+type Q3AggregateState struct {
+	TPVData map[string]float64 // year_half|store_id -> accumulated tpv
+}
+
 // Q3Aggregate handles aggregation of Q3 grouped data to accumulate TPV by year_half and store
 type Q3Aggregate struct {
-	mu sync.RWMutex
-
-	// Map to accumulate TPV by year_half + store_id
-	tpvData map[string]float64 // year_half|store_id -> accumulated tpv
-
+	mu          sync.RWMutex
+	state       *Q3AggregateState
+	persistence *common.StatePersistence
+	clientID    string
 }
 
 // NewQ3Aggregate creates a new Q3 aggregate processor
 func NewQ3Aggregate() *Q3Aggregate {
+	return NewQ3AggregateWithPersistence("/app/state")
+}
+
+func NewQ3AggregateWithPersistence(stateDir string) *Q3Aggregate {
+	persistence, err := common.NewStatePersistence(stateDir)
+	if err != nil {
+		log.Printf("action: q3_aggregate_init | result: fail | error: %v | fallback: memory_only", err)
+		persistence = nil
+	}
+
 	return &Q3Aggregate{
-		tpvData: make(map[string]float64),
+		state: &Q3AggregateState{
+			TPVData: make(map[string]float64),
+		},
+		persistence: persistence,
 	}
 }
 
@@ -67,12 +84,19 @@ func (a *Q3Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 		localTPV[key] += tpv
 	}
 
-	// Only lock for the final merge into shared map (critical section)
+	// Only lock for the final merge into shared state (critical section)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	for key, tpv := range localTPV {
-		a.tpvData[key] += tpv
+		a.state.TPVData[key] += tpv
+	}
+
+	if a.persistence != nil && a.clientID != "" {
+		if err := a.persistence.SaveState(a.Name(), a.clientID, a.state); err != nil {
+			log.Printf("action: q3_save_state | result: fail | client_id: %s | error: %v",
+				a.clientID, err)
+		}
 	}
 
 	return nil
@@ -81,12 +105,32 @@ func (a *Q3Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 // Finalize generates the final aggregated TPV records by year_half and store
 func (a *Q3Aggregate) Finalize(clientId string) ([]protocol.Record, error) {
 
-	log.Printf("action: q3_aggregate_finalize | client_id: %s | tpv_entries: %d", clientId, len(a.tpvData))
+	if a.clientID == "" {
+		a.clientID = clientId
+
+		if a.persistence != nil {
+			var savedState Q3AggregateState
+			if err := a.persistence.LoadState(a.Name(), clientId, &savedState); err != nil {
+				log.Printf("action: q3_load_state | result: fail | client_id: %s | error: %v",
+					clientId, err)
+			} else if savedState.TPVData != nil {
+				a.mu.Lock()
+				for key, tpv := range savedState.TPVData {
+					a.state.TPVData[key] += tpv
+				}
+				a.mu.Unlock()
+				log.Printf("action: q3_load_state | result: success | client_id: %s | tpv_entries: %d",
+					clientId, len(savedState.TPVData))
+			}
+		}
+	}
+
+	log.Printf("action: q3_aggregate_finalize | client_id: %s | tpv_entries: %d", clientId, len(a.state.TPVData))
 
 	var result []protocol.Record
 
 	// Convert accumulated data to Q3AggregatedRecord
-	for key, tpv := range a.tpvData {
+	for key, tpv := range a.state.TPVData {
 		parts := parseAggregateKey(key)
 		yearHalf, storeID := parts[0], parts[1]
 
@@ -130,8 +174,15 @@ func (a *Q3Aggregate) Cleanup() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Clear map to release memory
-	a.tpvData = nil
+	if a.persistence != nil && a.clientID != "" {
+		if err := a.persistence.DeleteState(a.Name(), a.clientID); err != nil {
+			log.Printf("action: q3_delete_state | result: fail | client_id: %s | error: %v",
+				a.clientID, err)
+		}
+	}
+
+	a.state.TPVData = nil
+	a.state = nil
 
 	return nil
 }

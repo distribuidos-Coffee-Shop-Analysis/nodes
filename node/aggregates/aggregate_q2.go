@@ -6,23 +6,41 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
+type Q2AggregateState struct {
+	QuantityData map[string]int     // year_month|item_id -> total quantity
+	ProfitData   map[string]float64 // year_month|item_id -> total profit
+}
+
 // Q2Aggregate handles aggregation of Q2 grouped data to find best selling items and most profitable items per month
 type Q2Aggregate struct {
-	mu sync.RWMutex
-
-	// Maps to accumulate data by year_month + item_id
-	quantityData map[string]int     // year_month|item_id -> total quantity
-	profitData   map[string]float64 // year_month|item_id -> total profit
+	mu          sync.RWMutex
+	state       *Q2AggregateState
+	persistence *common.StatePersistence
+	clientID    string
 }
 
 // NewQ2Aggregate creates a new Q2 aggregate processor
 func NewQ2Aggregate() *Q2Aggregate {
+	return NewQ2AggregateWithPersistence("/app/state")
+}
+
+func NewQ2AggregateWithPersistence(stateDir string) *Q2Aggregate {
+	persistence, err := common.NewStatePersistence(stateDir)
+	if err != nil {
+		log.Printf("action: q2_aggregate_init | result: fail | error: %v | fallback: memory_only", err)
+		persistence = nil
+	}
+
 	return &Q2Aggregate{
-		quantityData: make(map[string]int),
-		profitData:   make(map[string]float64),
+		state: &Q2AggregateState{
+			QuantityData: make(map[string]int),
+			ProfitData:   make(map[string]float64),
+		},
+		persistence: persistence,
 	}
 }
 
@@ -71,16 +89,23 @@ func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 		}
 	}
 
-	// Only lock for the final merge into shared maps
+	// Only lock for the final merge into shared state
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	for key, quantity := range localQuantity {
-		a.quantityData[key] += quantity
+		a.state.QuantityData[key] += quantity
 	}
 
 	for key, profit := range localProfit {
-		a.profitData[key] += profit
+		a.state.ProfitData[key] += profit
+	}
+
+	if a.persistence != nil && a.clientID != "" {
+		if err := a.persistence.SaveState(a.Name(), a.clientID, a.state); err != nil {
+			log.Printf("action: q2_save_state | result: fail | client_id: %s | error: %v",
+				a.clientID, err)
+		}
 	}
 
 	return nil
@@ -91,15 +116,39 @@ func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 // Finalize calculates the best selling and most profitable items per year_month
 func (a *Q2Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
 
+	if a.clientID == "" {
+		a.clientID = clientID
+
+		if a.persistence != nil {
+			var savedState Q2AggregateState
+			if err := a.persistence.LoadState(a.Name(), clientID, &savedState); err != nil {
+				log.Printf("action: q2_load_state | result: fail | client_id: %s | error: %v",
+					clientID, err)
+			} else if savedState.QuantityData != nil && savedState.ProfitData != nil {
+				a.mu.Lock()
+				for key, quantity := range savedState.QuantityData {
+					a.state.QuantityData[key] += quantity
+				}
+				for key, profit := range savedState.ProfitData {
+					a.state.ProfitData[key] += profit
+				}
+				a.mu.Unlock()
+				log.Printf("action: q2_load_state | result: success | client_id: %s | "+
+					"quantity_entries: %d | profit_entries: %d",
+					clientID, len(savedState.QuantityData), len(savedState.ProfitData))
+			}
+		}
+	}
+
 	log.Printf("action: q2_aggregate_finalize | client_id: %s | quantity_entries: %d | profit_entries: %d",
-		clientID, len(a.quantityData), len(a.profitData))
+		clientID, len(a.state.QuantityData), len(a.state.ProfitData))
 
 	// Group data by year_month for processing
 	quantityByMonth := make(map[string]map[string]int)   // year_month -> item_id -> quantity
 	profitByMonth := make(map[string]map[string]float64) // year_month -> item_id -> profit
 
 	// Process quantity data
-	for key, quantity := range a.quantityData {
+	for key, quantity := range a.state.QuantityData {
 		parts := parseAggregateKey(key)
 		yearMonth, itemID := parts[0], parts[1]
 
@@ -110,7 +159,7 @@ func (a *Q2Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
 	}
 
 	// Process profit data
-	for key, profit := range a.profitData {
+	for key, profit := range a.state.ProfitData {
 		parts := parseAggregateKey(key)
 		yearMonth, itemID := parts[0], parts[1]
 
@@ -221,9 +270,17 @@ func (a *Q2Aggregate) Cleanup() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Clear all maps to release memory
-	a.quantityData = nil
-	a.profitData = nil
+	if a.persistence != nil && a.clientID != "" {
+		if err := a.persistence.DeleteState(a.Name(), a.clientID); err != nil {
+			log.Printf("action: q2_delete_state | result: fail | client_id: %s | error: %v",
+				a.clientID, err)
+		}
+	}
+
+	// Clear all state to release memory
+	a.state.QuantityData = nil
+	a.state.ProfitData = nil
+	a.state = nil
 
 	return nil
 }

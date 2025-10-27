@@ -8,23 +8,41 @@ import (
 	"sync"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
+	nodeCommon "github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
+
+type Q4AggregateState struct {
+	StoreUserCounts map[string]map[string]int
+}
 
 // Q4Aggregate calculates the top 3 customers per store.
 // Input: Q4GroupedRecord (store_id, user_id, transaction_count)
 // Output: Q4AggregatedRecord (store_id, user_id, purchases_qty) - top 3 per store
 type Q4Aggregate struct {
-	mu sync.RWMutex
-
-	// Map from store_id to map[user_id]transaction_count
-	storeUserCounts map[string]map[string]int
+	mu          sync.RWMutex
+	state       *Q4AggregateState
+	persistence *nodeCommon.StatePersistence
+	clientID    string
 }
 
 // NewQ4Aggregate creates a new Q4Aggregate instance.
 func NewQ4Aggregate() *Q4Aggregate {
+	return NewQ4AggregateWithPersistence("/app/state")
+}
+
+func NewQ4AggregateWithPersistence(stateDir string) *Q4Aggregate {
+	persistence, err := nodeCommon.NewStatePersistence(stateDir)
+	if err != nil {
+		log.Printf("action: q4_aggregate_init | result: fail | error: %v | fallback: memory_only", err)
+		persistence = nil
+	}
+
 	return &Q4Aggregate{
-		storeUserCounts: make(map[string]map[string]int),
+		state: &Q4AggregateState{
+			StoreUserCounts: make(map[string]map[string]int),
+		},
+		persistence: persistence,
 	}
 }
 
@@ -76,19 +94,23 @@ func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 		return nil
 	}
 
-	// Only lock for the final merge into shared map
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	for storeID, userCounts := range localStoreUserCounts {
-		// Initialize store map if needed (in shared map)
-		if q.storeUserCounts[storeID] == nil {
-			q.storeUserCounts[storeID] = make(map[string]int)
+		if q.state.StoreUserCounts[storeID] == nil {
+			q.state.StoreUserCounts[storeID] = make(map[string]int)
 		}
 
-		// Merge user counts from local map to shared map
 		for userID, count := range userCounts {
-			q.storeUserCounts[storeID][userID] += count
+			q.state.StoreUserCounts[storeID][userID] += count
+		}
+	}
+
+	if q.persistence != nil && q.clientID != "" {
+		if err := q.persistence.SaveState(q.Name(), q.clientID, q.state); err != nil {
+			log.Printf("action: q4_save_state | result: fail | client_id: %s | error: %v",
+				q.clientID, err)
 		}
 	}
 
@@ -96,12 +118,38 @@ func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 }
 
 func (q *Q4Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
-	log.Printf("action: q4_finalize_start | client_id: %s | stores: %d", clientID, len(q.storeUserCounts))
+
+	if q.clientID == "" {
+		q.clientID = clientID
+
+		if q.persistence != nil {
+			var savedState Q4AggregateState
+			if err := q.persistence.LoadState(q.Name(), clientID, &savedState); err != nil {
+				log.Printf("action: q4_load_state | result: fail | client_id: %s | error: %v",
+					clientID, err)
+			} else if savedState.StoreUserCounts != nil {
+				q.mu.Lock()
+				for storeID, userCounts := range savedState.StoreUserCounts {
+					if q.state.StoreUserCounts[storeID] == nil {
+						q.state.StoreUserCounts[storeID] = make(map[string]int)
+					}
+					for userID, count := range userCounts {
+						q.state.StoreUserCounts[storeID][userID] += count
+					}
+				}
+				q.mu.Unlock()
+				log.Printf("action: q4_load_state | result: success | client_id: %s | stores: %d",
+					clientID, len(savedState.StoreUserCounts))
+			}
+		}
+	}
+
+	log.Printf("action: q4_finalize_start | client_id: %s | stores: %d", clientID, len(q.state.StoreUserCounts))
 
 	var results []protocol.Record
 
 	// For each store, get top 3 customers
-	for storeId, userCounts := range q.storeUserCounts {
+	for storeId, userCounts := range q.state.StoreUserCounts {
 		// Create slice of customers for this store
 		type Customer struct {
 			UserId           string
@@ -207,8 +255,15 @@ func (a *Q4Aggregate) Cleanup() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Clear map to release memory
-	a.storeUserCounts = nil
+	if a.persistence != nil && a.clientID != "" {
+		if err := a.persistence.DeleteState(a.Name(), a.clientID); err != nil {
+			log.Printf("action: q4_delete_state | result: fail | client_id: %s | error: %v",
+				a.clientID, err)
+		}
+	}
+
+	a.state.StoreUserCounts = nil
+	a.state = nil
 
 	return nil
 }

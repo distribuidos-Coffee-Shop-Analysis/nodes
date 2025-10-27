@@ -5,20 +5,39 @@ import (
 	"log"
 	"sync"
 
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
+type Q3JoinerState struct {
+	Stores map[string]*protocol.StoreRecord // key: store_id, value: store record
+}
+
 // Q3Joiner handles joining Q3 aggregate data with store names
 type Q3Joiner struct {
-	// In-memory storage for stores (reference data)
-	stores map[string]*protocol.StoreRecord // key: store_id, value: store record
-	mu     sync.RWMutex                     // mutex for thread-safe access
+	state       *Q3JoinerState
+	mu          sync.RWMutex
+	persistence *common.StatePersistence
+	clientID    string
 }
 
 // NewQ3Joiner creates a new Q3Joiner instance
 func NewQ3Joiner() *Q3Joiner {
+	return NewQ3JoinerWithPersistence("/app/state")
+}
+
+func NewQ3JoinerWithPersistence(stateDir string) *Q3Joiner {
+	persistence, err := common.NewStatePersistence(stateDir)
+	if err != nil {
+		log.Printf("action: q3_joiner_init | result: fail | error: %v | fallback: memory_only", err)
+		persistence = nil
+	}
+
 	return &Q3Joiner{
-		stores: make(map[string]*protocol.StoreRecord),
+		state: &Q3JoinerState{
+			Stores: make(map[string]*protocol.StoreRecord),
+		},
+		persistence: persistence,
 	}
 }
 
@@ -40,17 +59,46 @@ func (j *Q3Joiner) StoreReferenceDataset(records []protocol.Record) error {
 			return fmt.Errorf("expected StoreRecord, got %T", record)
 		}
 
-		j.stores[storeRecord.StoreID] = storeRecord
+		j.state.Stores[storeRecord.StoreID] = storeRecord
 		log.Printf("action: q3_store_stored | store_id: %s | store_name: %s",
 			storeRecord.StoreID, storeRecord.StoreName)
 	}
 
-	log.Printf("action: q3_reference_data_stored | total_stores: %d", len(j.stores))
+	log.Printf("action: q3_reference_data_stored | total_stores: %d", len(j.state.Stores))
+
+	if j.persistence != nil && j.clientID != "" {
+		if err := j.persistence.SaveState(j.Name(), j.clientID, j.state); err != nil {
+			log.Printf("action: q3_joiner_save_state | result: fail | client_id: %s | error: %v",
+				j.clientID, err)
+		}
+	}
+
 	return nil
 }
 
 // PerformJoin joins Q3 aggregated data with stored store information
 func (j *Q3Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId string) ([]protocol.Record, error) {
+
+	if j.clientID == "" {
+		j.clientID = clientId
+
+		if j.persistence != nil {
+			var savedState Q3JoinerState
+			if err := j.persistence.LoadState(j.Name(), clientId, &savedState); err != nil {
+				log.Printf("action: q3_joiner_load_state | result: fail | client_id: %s | error: %v",
+					clientId, err)
+			} else if savedState.Stores != nil {
+				j.mu.Lock()
+				for key, store := range savedState.Stores {
+					j.state.Stores[key] = store
+				}
+				j.mu.Unlock()
+				log.Printf("action: q3_joiner_load_state | result: success | client_id: %s | stores: %d",
+					clientId, len(savedState.Stores))
+			}
+		}
+	}
+
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
@@ -63,7 +111,7 @@ func (j *Q3Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId str
 		}
 
 		// Join aggregated data with store names
-		storeRecord, exists := j.stores[aggRecord.StoreID]
+		storeRecord, exists := j.state.Stores[aggRecord.StoreID]
 		if !exists {
 			log.Printf("action: q3_join_warning | client_id: %s | store_id: %s | error: store_not_found", clientId, aggRecord.StoreID)
 			continue // Skip records without matching stores
@@ -100,8 +148,20 @@ func (j *Q3Joiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ3Agg
 }
 
-// Cleanup is a no-op for Q3Joiner
-// Stores dataset is tiny (~10 stores) and kept in memory for potential future queries
+// Cleanup releases resources and deletes state file
 func (j *Q3Joiner) Cleanup() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if j.persistence != nil && j.clientID != "" {
+		if err := j.persistence.DeleteState(j.Name(), j.clientID); err != nil {
+			log.Printf("action: q3_joiner_delete_state | result: fail | client_id: %s | error: %v",
+				j.clientID, err)
+		}
+	}
+
+	j.state.Stores = nil
+	j.state = nil
+
 	return nil
 }

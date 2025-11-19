@@ -1,13 +1,18 @@
 package handlers
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
+	"os"
 	"sync"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/joiners"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/storage"
 	"github.com/rabbitmq/amqp091-go"
 )
 
@@ -36,6 +41,15 @@ type JoinerHandler struct {
 	// Reusable publisher to avoid channel exhaustion
 	pub   *middleware.Publisher
 	pubMu sync.Mutex
+
+	stateStore storage.StateStore
+}
+
+const joinerSnapshotVersion = 1
+
+type joinerSnapshotMetadata struct {
+	Version                  int  `json:"version"`
+	ReferenceDatasetComplete bool `json:"reference_dataset_complete"`
 }
 
 // NewJoinerHandler creates a new joiner handler with a factory function
@@ -81,19 +95,21 @@ func (h *JoinerHandler) getState(clientID string) *JoinerClientState {
 		referenceDatasetComplete: false,
 		bufferedAggregateBatches: make([]bufferedBatch, 0),
 	}
+	h.restoreClientState(clientID, st)
 	h.states[clientID] = st
 	return st
 }
 
 // StartHandler starts the joiner handler - consumes from multiple exchanges
 func (h *JoinerHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
+	h.initStateStore(queueManager.Wiring.Role)
+
 	pub, err := middleware.NewPublisher(queueManager.Connection, queueManager.Wiring)
 	if err != nil {
 		log.Printf("action: create_publisher | result: fail | error: %v", err)
 		return err
 	}
 	h.pub = pub
-	log.Printf("action: create_publisher | result: success | handler: %s", h.Name())
 
 	err = queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
 		h.Handle(batchMessage, queueManager.Connection, queueManager.Wiring, clientWg, delivery)
@@ -153,6 +169,13 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 		log.Printf("action: reference_data_complete | client_id: %s | joiner: %s | buffered_batches: %d",
 			clientID, state.joiner.Name(), len(bufferedBatches))
 
+		if err := h.persistClientState(clientID, state); err != nil {
+			log.Printf("action: joiner_persist_state | client_id: %s | joiner: %s | result: fail | error: %v",
+				clientID, state.joiner.Name(), err)
+			msg.Nack(false, true)
+			return err
+		}
+
 		// Process any buffered aggregate batches that arrived before reference data was complete
 		if len(bufferedBatches) > 0 {
 			for i, buffered := range bufferedBatches {
@@ -165,9 +188,6 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 					continue
 				}
 			}
-
-			log.Printf("action: process_buffered_batches_complete | client_id: %s | joiner: %s | processed: %d",
-				clientID, state.joiner.Name(), len(bufferedBatches))
 		}
 	}
 
@@ -177,7 +197,7 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 
 // processAggregatedData performs the actual join and publishes results
 func (h *JoinerHandler) processAggregatedData(state *JoinerClientState, batchMessage *protocol.BatchMessage,
-	connection *amqp091.Connection, wiring *common.NodeWiring, msg amqp091.Delivery, clientID string) error {
+	_ *amqp091.Connection, _ *common.NodeWiring, msg amqp091.Delivery, clientID string) error {
 
 	log.Printf("action: join_aggregate_data | client_id: %s | joiner: %s | records: %d",
 		clientID, state.joiner.Name(), len(batchMessage.Records))
@@ -210,19 +230,14 @@ func (h *JoinerHandler) processAggregatedData(state *JoinerClientState, batchMes
 		clientID, state.joiner.Name(), batchMessage.BatchIndex, len(joinedRecords), batchMessage.EOF)
 
 	// Cleanup when EOF received - all joins for this client are complete
+	// Note: We don't cleanup immediately because multiple upstream nodes may send EOF
+	// (e.g., 5 Q4 User Joiners all send batches with EOF to 1 Q4 Store Joiner)
+	// The cleanup happens when the handler decides it's safe (timeout, memory pressure, etc.)
 	if batchMessage.EOF {
-		log.Printf("action: joiner_eof_received | client_id: %s | joiner: %s", clientID, state.joiner.Name())
-
-		if err := state.joiner.Cleanup(); err != nil {
-			log.Printf("action: joiner_cleanup | client_id: %s | result: fail | error: %v", clientID, err)
-		} else {
-			log.Printf("action: joiner_cleanup | client_id: %s | result: success", clientID)
-		}
-
-		// // Remove client state from handler's map to release handler-level memory
-		// h.statesMu.Lock()
-		// delete(h.states, clientID)
-		// h.statesMu.Unlock()
+		// For now, we keep the reference data to handle multiple EOF batches from different upstream nodes
+		// Cleanup will happen when the node shuts down or on explicit cleanup command
+		log.Printf("action: joiner_eof_received | client_id: %s | joiner: %s | note: keeping_reference_data_for_multiple_eof_batches",
+			clientID, state.joiner.Name())
 	}
 
 	msg.Ack(false)
@@ -268,4 +283,120 @@ func (h *JoinerHandler) createOutputBatch(state *JoinerClientState, batchIndex i
 		Records:     records,
 		EOF:         eof,
 	}
+}
+
+func (h *JoinerHandler) initStateStore(role common.NodeRole) {
+	if h.stateStore != nil {
+		return
+	}
+
+	baseDir := os.Getenv("STATE_BASE_DIR")
+	if baseDir == "" {
+		baseDir = "/app/state"
+	}
+
+	store, err := storage.NewFileStateStore(baseDir, string(role))
+	if err != nil {
+		log.Printf("action: joiner_state_store_init | role: %s | result: fail | error: %v", role, err)
+		return
+	}
+
+	h.stateStore = store
+}
+
+func (h *JoinerHandler) persistClientState(clientID string, state *JoinerClientState) error {
+	if h.stateStore == nil {
+		return nil
+	}
+
+	persistable, ok := state.joiner.(joiners.PersistentJoiner)
+	if !ok {
+		return nil
+	}
+
+	data, err := persistable.SerializeState()
+	if err != nil {
+		return fmt.Errorf("serialize joiner state: %w", err)
+	}
+
+	meta := state.metadataSnapshot()
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("encode joiner metadata: %w", err)
+	}
+
+	return h.stateStore.Persist(clientID, &storage.Snapshot{
+		Metadata: metaBytes,
+		Data:     data,
+	})
+}
+
+func (h *JoinerHandler) restoreClientState(clientID string, state *JoinerClientState) {
+	if h.stateStore == nil {
+		return
+	}
+
+	persistable, ok := state.joiner.(joiners.PersistentJoiner)
+	if !ok {
+		return
+	}
+
+	snapshot, err := h.stateStore.Load(clientID)
+	if err != nil {
+		if !errors.Is(err, storage.ErrSnapshotNotFound) {
+			log.Printf("action: joiner_restore_state | client_id: %s | result: fail | error: %v", clientID, err)
+		}
+		return
+	}
+
+	if len(snapshot.Data) > 0 {
+		if err := persistable.RestoreState(snapshot.Data); err != nil {
+			log.Printf("action: joiner_restore_state | client_id: %s | joiner: %s | result: fail | error: %v",
+				clientID, state.joiner.Name(), err)
+			return
+		}
+	}
+
+	if len(snapshot.Metadata) > 0 {
+		var meta joinerSnapshotMetadata
+		if err := json.Unmarshal(snapshot.Metadata, &meta); err != nil {
+			log.Printf("action: joiner_restore_metadata | client_id: %s | result: fail | error: %v", clientID, err)
+		} else {
+			state.applyMetadata(meta)
+		}
+	}
+}
+
+func (h *JoinerHandler) deleteClientSnapshot(clientID string) {
+	if h.stateStore == nil {
+		return
+	}
+
+	if err := h.stateStore.Delete(clientID); err != nil {
+		if !errors.Is(err, storage.ErrSnapshotNotFound) {
+			log.Printf("action: joiner_state_delete | client_id: %s | result: fail | error: %v", clientID, err)
+		}
+	}
+}
+
+func (s *JoinerClientState) metadataSnapshot() joinerSnapshotMetadata {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return joinerSnapshotMetadata{
+		Version:                  joinerSnapshotVersion,
+		ReferenceDatasetComplete: s.referenceDatasetComplete,
+	}
+}
+
+func (s *JoinerClientState) applyMetadata(meta joinerSnapshotMetadata) {
+	if meta.Version != joinerSnapshotVersion {
+		log.Printf("action: joiner_metadata_version_mismatch | expected: %d | got: %d",
+			joinerSnapshotVersion, meta.Version)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.referenceDatasetComplete = meta.ReferenceDatasetComplete
 }

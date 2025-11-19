@@ -1,13 +1,12 @@
 package joiners
 
 import (
+	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
-	nodeCommon "github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"	
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
 type Q4UserJoinerState struct {
@@ -16,29 +15,17 @@ type Q4UserJoinerState struct {
 
 // Q4UserJoiner handles joining Q4 aggregate data with user information (birthdate)
 type Q4UserJoiner struct {
-	state       *Q4UserJoinerState
-	mu          sync.RWMutex
-	persistence *nodeCommon.StatePersistence
-	clientID    string
+	state    *Q4UserJoinerState
+	mu       sync.RWMutex
+	clientID string
 }
 
 // NewQ4UserJoiner creates a new Q4UserJoiner instance
 func NewQ4UserJoiner() *Q4UserJoiner {
-	return NewQ4UserJoinerWithPersistence("/app/state")
-}
-
-func NewQ4UserJoinerWithPersistence(stateDir string) *Q4UserJoiner {
-	persistence, err := nodeCommon.NewStatePersistence(stateDir)
-	if err != nil {
-		log.Printf("action: q4_user_joiner_init | result: fail | error: %v | fallback: memory_only", err)
-		persistence = nil
-	}
-
 	return &Q4UserJoiner{
 		state: &Q4UserJoinerState{
 			Users: make(map[string]string),
 		},
-		persistence: persistence,
 	}
 }
 
@@ -63,37 +50,13 @@ func (j *Q4UserJoiner) StoreReferenceDataset(records []protocol.Record) error {
 		j.state.Users[normalizedUserID] = userRecord.Birthdate
 	}
 
-	if j.persistence != nil && j.clientID != "" {
-		if err := j.persistence.SaveState(j.Name(), j.clientID, j.state); err != nil {
-			log.Printf("action: q4_user_joiner_save_state | result: fail | client_id: %s | error: %v",
-				j.clientID, err)
-		}
-	}
-
 	return nil
 }
 
 // PerformJoin joins Q4 aggregated data with stored user information
 func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record, clientId string) ([]protocol.Record, error) {
-
 	if j.clientID == "" {
 		j.clientID = clientId
-
-		if j.persistence != nil {
-			var savedState Q4UserJoinerState
-			if err := j.persistence.LoadState(j.Name(), clientId, &savedState); err != nil {
-				log.Printf("action: q4_user_joiner_load_state | result: fail | client_id: %s | error: %v",
-					clientId, err)
-			} else if savedState.Users != nil {
-				j.mu.Lock()
-				for key, birthdate := range savedState.Users {
-					j.state.Users[key] = birthdate
-				}
-				j.mu.Unlock()
-				log.Printf("action: q4_user_joiner_load_state | result: success | client_id: %s | users: %d",
-					clientId, len(savedState.Users))
-			}
-		}
 	}
 
 	j.mu.RLock()
@@ -107,14 +70,12 @@ func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record, clientId
 			return nil, fmt.Errorf("expected Q4AggregatedRecord, got %T", record)
 		}
 
-		// Normalize user_id before lookup
+		// Normalize UserID to handle potential ".0" suffix
 		normalizedUserID := common.NormalizeUserID(aggRecord.UserID)
 
-		// Join aggregated data with user information (lookup birthdate)
+		// Join aggregated data with user birthdate
 		birthdate, exists := j.state.Users[normalizedUserID]
 		if !exists {
-			log.Printf("action: q4_user_join_missing | client_id: %s | user_id: %s | store_id: %s",
-				clientId, normalizedUserID, aggRecord.StoreID)
 			continue // Skip records without matching users
 		}
 
@@ -126,9 +87,6 @@ func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record, clientId
 		}
 		joinedRecords = append(joinedRecords, joinedRecord)
 	}
-
-	log.Printf("action: q4_user_join_complete | client_id: %s | input: %d | joined: %d",
-		clientId, len(aggregatedRecords), len(joinedRecords))
 
 	return joinedRecords, nil
 }
@@ -148,26 +106,41 @@ func (j *Q4UserJoiner) AcceptsAggregateType(datasetType protocol.DatasetType) bo
 	return datasetType == protocol.DatasetTypeQ4Agg
 }
 
-// Cleanup releases memory held by the users map and deletes state file
-// Users dataset is HUGE (millions of rows, GBs of memory) so this is critical
-// Called after EOF is received and all batches are processed
+// Cleanup releases resources
+// Note: We keep reference data because multiple EOF batches may arrive from upstream
+// Even though users dataset is large, we need it to handle all EOF batches from multiple aggregates
 func (j *Q4UserJoiner) Cleanup() error {
+	// No-op: we keep reference data to handle multiple EOF batches
+	return nil
+}
+
+// SerializeState exports the current joiner state as compact JSON
+func (j *Q4UserJoiner) SerializeState() ([]byte, error) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+
+	return json.Marshal(j.state)
+}
+
+// RestoreState restores the joiner state from a JSON snapshot
+func (j *Q4UserJoiner) RestoreState(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	var state Q4UserJoinerState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("decode q4 user joiner snapshot: %w", err)
+	}
+
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	log.Printf("action: q4_user_joiner_cleanup | users_count: %d | releasing_memory", len(j.state.Users))
-
-	if j.persistence != nil && j.clientID != "" {
-		if err := j.persistence.DeleteState(j.Name(), j.clientID); err != nil {
-			log.Printf("action: q4_user_joiner_delete_state | result: fail | client_id: %s | error: %v",
-				j.clientID, err)
-		}
+	if state.Users != nil {
+		j.state.Users = state.Users
+	} else {
+		j.state.Users = make(map[string]string)
 	}
-
-	j.state.Users = nil
-	j.state = nil
-
-	log.Printf("action: q4_user_joiner_cleanup | result: success")
 
 	return nil
 }

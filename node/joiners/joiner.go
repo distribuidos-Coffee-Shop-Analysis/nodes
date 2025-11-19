@@ -25,11 +25,21 @@ type Joiner interface {
 	AcceptsAggregateType(datasetType protocol.DatasetType) bool
 
 	// Cleanup releases resources held by this joiner instance
-	// Called after all aggregate batches are processed (EOF threshold reached)
+	// Note: With multiple upstream nodes, EOF may arrive multiple times
+	// (e.g., 5 Q4 User Joiners → 1 Q4 Store Joiner = 5 EOF batches)
+	// Therefore, cleanup is typically a no-op for joiners with small reference data.
 	// Implementation is joiner-specific:
-	//   - Q4UserJoiner: Clears users map (large dataset - GBs of memory)
-	//   - Q4StoreJoiner: No-op (stores dataset is tiny - ~10 rows)
-	//   - Other joiners: No-op (reference data is small and kept)
+	//   - Q4UserJoiner: No-op (we keep reference data to handle multiple EOF batches)
+	//   - Q4StoreJoiner: No-op (stores dataset is tiny - ~10 rows, ~1KB)
+	//   - Q2Joiner: No-op (menu items dataset is small - ~100 rows)
+	//   - Q3Joiner: No-op (stores dataset is small - ~10 rows)
 	// Returns nil for no-op implementations
 	Cleanup() error
+}
+
+// PersistentJoiner marks joiners that can serialize their state to disk and restore it.
+// This interface enables recovery from crashes by persisting reference data.
+type PersistentJoiner interface {
+	SerializeState() ([]byte, error)
+	RestoreState(data []byte) error
 }

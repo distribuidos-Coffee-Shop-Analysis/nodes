@@ -1,14 +1,16 @@
 package aggregates
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"log"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
-	nodeCommon "github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
@@ -20,29 +22,17 @@ type Q4AggregateState struct {
 // Input: Q4GroupedRecord (store_id, user_id, transaction_count)
 // Output: Q4AggregatedRecord (store_id, user_id, purchases_qty) - top 3 per store
 type Q4Aggregate struct {
-	mu          sync.RWMutex
-	state       *Q4AggregateState
-	persistence *nodeCommon.StatePersistence
-	clientID    string
+	mu       sync.RWMutex
+	state    *Q4AggregateState
+	clientID string
 }
 
 // NewQ4Aggregate creates a new Q4Aggregate instance.
 func NewQ4Aggregate() *Q4Aggregate {
-	return NewQ4AggregateWithPersistence("/app/state")
-}
-
-func NewQ4AggregateWithPersistence(stateDir string) *Q4Aggregate {
-	persistence, err := nodeCommon.NewStatePersistence(stateDir)
-	if err != nil {
-		log.Printf("action: q4_aggregate_init | result: fail | error: %v | fallback: memory_only", err)
-		persistence = nil
-	}
-
 	return &Q4Aggregate{
 		state: &Q4AggregateState{
 			StoreUserCounts: make(map[string]map[string]int),
 		},
-		persistence: persistence,
 	}
 }
 
@@ -107,13 +97,6 @@ func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 		}
 	}
 
-	if q.persistence != nil && q.clientID != "" {
-		if err := q.persistence.SaveState(q.Name(), q.clientID, q.state); err != nil {
-			log.Printf("action: q4_save_state | result: fail | client_id: %s | error: %v",
-				q.clientID, err)
-		}
-	}
-
 	return nil
 }
 
@@ -121,27 +104,6 @@ func (q *Q4Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
 
 	if q.clientID == "" {
 		q.clientID = clientID
-
-		if q.persistence != nil {
-			var savedState Q4AggregateState
-			if err := q.persistence.LoadState(q.Name(), clientID, &savedState); err != nil {
-				log.Printf("action: q4_load_state | result: fail | client_id: %s | error: %v",
-					clientID, err)
-			} else if savedState.StoreUserCounts != nil {
-				q.mu.Lock()
-				for storeID, userCounts := range savedState.StoreUserCounts {
-					if q.state.StoreUserCounts[storeID] == nil {
-						q.state.StoreUserCounts[storeID] = make(map[string]int)
-					}
-					for userID, count := range userCounts {
-						q.state.StoreUserCounts[storeID][userID] += count
-					}
-				}
-				q.mu.Unlock()
-				log.Printf("action: q4_load_state | result: success | client_id: %s | stores: %d",
-					clientID, len(savedState.StoreUserCounts))
-			}
-		}
 	}
 
 	log.Printf("action: q4_finalize_start | client_id: %s | stores: %d", clientID, len(q.state.StoreUserCounts))
@@ -255,15 +217,88 @@ func (a *Q4Aggregate) Cleanup() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.persistence != nil && a.clientID != "" {
-		if err := a.persistence.DeleteState(a.Name(), a.clientID); err != nil {
-			log.Printf("action: q4_delete_state | result: fail | client_id: %s | error: %v",
-				a.clientID, err)
+	a.state.StoreUserCounts = nil
+	a.state = nil
+
+	return nil
+}
+
+// Format: store_id|user_id|count\n for each entry
+func (a *Q4Aggregate) SerializeState() ([]byte, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	totalEntries := 0
+	for _, userCounts := range a.state.StoreUserCounts {
+		totalEntries += len(userCounts)
+	}
+
+	var buf bytes.Buffer
+	buf.Grow(totalEntries * 50) // Pre-allocate
+
+	for storeID, userCounts := range a.state.StoreUserCounts {
+		for userID, count := range userCounts {
+			buf.WriteString(storeID)
+			buf.WriteByte('|')
+			buf.WriteString(userID)
+			buf.WriteByte('|')
+			buf.WriteString(strconv.Itoa(count))
+			buf.WriteByte('\n')
 		}
 	}
 
-	a.state.StoreUserCounts = nil
-	a.state = nil
+	return buf.Bytes(), nil
+}
+
+func (a *Q4Aggregate) RestoreState(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.state.StoreUserCounts = make(map[string]map[string]int)
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+
+		if len(line) == 0 {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) != 3 {
+			log.Printf("action: q4_restore_skip_invalid_line | line: %d | parts: %d", lineNum, len(parts))
+			continue
+		}
+
+		storeID := parts[0]
+		userID := parts[1]
+		count, err := strconv.Atoi(parts[2])
+		if err != nil {
+			log.Printf("action: q4_restore_skip_invalid_count | line: %d | count: %s | error: %v",
+				lineNum, parts[2], err)
+			continue
+		}
+
+		if a.state.StoreUserCounts[storeID] == nil {
+			a.state.StoreUserCounts[storeID] = make(map[string]int)
+		}
+
+		a.state.StoreUserCounts[storeID][userID] = count
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan q4 aggregate snapshot: %w", err)
+	}
+
+	log.Printf("action: q4_restore_complete | entries_restored: %d | stores: %d",
+		lineNum, len(a.state.StoreUserCounts))
 
 	return nil
 }

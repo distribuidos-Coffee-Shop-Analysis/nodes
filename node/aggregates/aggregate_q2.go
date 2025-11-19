@@ -1,12 +1,14 @@
 package aggregates
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
@@ -17,30 +19,18 @@ type Q2AggregateState struct {
 
 // Q2Aggregate handles aggregation of Q2 grouped data to find best selling items and most profitable items per month
 type Q2Aggregate struct {
-	mu          sync.RWMutex
-	state       *Q2AggregateState
-	persistence *common.StatePersistence
-	clientID    string
+	mu       sync.RWMutex
+	state    *Q2AggregateState
+	clientID string
 }
 
 // NewQ2Aggregate creates a new Q2 aggregate processor
 func NewQ2Aggregate() *Q2Aggregate {
-	return NewQ2AggregateWithPersistence("/app/state")
-}
-
-func NewQ2AggregateWithPersistence(stateDir string) *Q2Aggregate {
-	persistence, err := common.NewStatePersistence(stateDir)
-	if err != nil {
-		log.Printf("action: q2_aggregate_init | result: fail | error: %v | fallback: memory_only", err)
-		persistence = nil
-	}
-
 	return &Q2Aggregate{
 		state: &Q2AggregateState{
 			QuantityData: make(map[string]int),
 			ProfitData:   make(map[string]float64),
 		},
-		persistence: persistence,
 	}
 }
 
@@ -101,13 +91,6 @@ func (a *Q2Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 		a.state.ProfitData[key] += profit
 	}
 
-	if a.persistence != nil && a.clientID != "" {
-		if err := a.persistence.SaveState(a.Name(), a.clientID, a.state); err != nil {
-			log.Printf("action: q2_save_state | result: fail | client_id: %s | error: %v",
-				a.clientID, err)
-		}
-	}
-
 	return nil
 }
 
@@ -118,26 +101,6 @@ func (a *Q2Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
 
 	if a.clientID == "" {
 		a.clientID = clientID
-
-		if a.persistence != nil {
-			var savedState Q2AggregateState
-			if err := a.persistence.LoadState(a.Name(), clientID, &savedState); err != nil {
-				log.Printf("action: q2_load_state | result: fail | client_id: %s | error: %v",
-					clientID, err)
-			} else if savedState.QuantityData != nil && savedState.ProfitData != nil {
-				a.mu.Lock()
-				for key, quantity := range savedState.QuantityData {
-					a.state.QuantityData[key] += quantity
-				}
-				for key, profit := range savedState.ProfitData {
-					a.state.ProfitData[key] += profit
-				}
-				a.mu.Unlock()
-				log.Printf("action: q2_load_state | result: success | client_id: %s | "+
-					"quantity_entries: %d | profit_entries: %d",
-					clientID, len(savedState.QuantityData), len(savedState.ProfitData))
-			}
-		}
 	}
 
 	log.Printf("action: q2_aggregate_finalize | client_id: %s | quantity_entries: %d | profit_entries: %d",
@@ -270,17 +233,110 @@ func (a *Q2Aggregate) Cleanup() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.persistence != nil && a.clientID != "" {
-		if err := a.persistence.DeleteState(a.Name(), a.clientID); err != nil {
-			log.Printf("action: q2_delete_state | result: fail | client_id: %s | error: %v",
-				a.clientID, err)
-		}
-	}
-
 	// Clear all state to release memory
 	a.state.QuantityData = nil
 	a.state.ProfitData = nil
 	a.state = nil
+
+	return nil
+}
+
+// Format:
+//
+//	Q|product_id|quantity\n for quantity data
+//	P|product_id|profit\n for profit data
+func (a *Q2Aggregate) SerializeState() ([]byte, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	var buf bytes.Buffer
+	// Pre-allocate
+	buf.Grow(len(a.state.QuantityData)*2*50 + len(a.state.ProfitData)*2*50)
+
+	for productID, quantity := range a.state.QuantityData {
+		buf.WriteByte('Q')
+		buf.WriteByte('|')
+		buf.WriteString(productID)
+		buf.WriteByte('|')
+		buf.WriteString(strconv.Itoa(quantity))
+		buf.WriteByte('\n')
+	}
+
+	for productID, profit := range a.state.ProfitData {
+		buf.WriteByte('P')
+		buf.WriteByte('|')
+		buf.WriteString(productID)
+		buf.WriteByte('|')
+		buf.WriteString(strconv.FormatFloat(profit, 'f', 2, 64))
+		buf.WriteByte('\n')
+	}
+
+	return buf.Bytes(), nil
+}
+
+// RestoreState restores Q2 aggregate state
+func (a *Q2Aggregate) RestoreState(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.state.QuantityData = make(map[string]int)
+	a.state.ProfitData = make(map[string]float64)
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+
+		if len(line) == 0 {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) != 3 {
+			log.Printf("action: q2_restore_skip_invalid_line | line: %d | parts: %d", lineNum, len(parts))
+			continue
+		}
+
+		recordType := parts[0]
+		productID := parts[1]
+		value := parts[2]
+
+		switch recordType {
+		case "Q":
+			quantity, err := strconv.Atoi(value)
+			if err != nil {
+				log.Printf("action: q2_restore_skip_invalid_quantity | line: %d | value: %s | error: %v",
+					lineNum, value, err)
+				continue
+			}
+			a.state.QuantityData[productID] = quantity
+
+		case "P":
+			profit, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				log.Printf("action: q2_restore_skip_invalid_profit | line: %d | value: %s | error: %v",
+					lineNum, value, err)
+				continue
+			}
+			a.state.ProfitData[productID] = profit
+
+		default:
+			log.Printf("action: q2_restore_skip_unknown_type | line: %d | type: %s", lineNum, recordType)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan q2 aggregate snapshot: %w", err)
+	}
+
+	log.Printf("action: q2_restore_complete | quantity_entries: %d | profit_entries: %d",
+		len(a.state.QuantityData), len(a.state.ProfitData))
 
 	return nil
 }

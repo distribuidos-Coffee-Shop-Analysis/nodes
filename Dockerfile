@@ -16,6 +16,7 @@ COPY common/ ./common/
 COPY protocol/ ./protocol/
 COPY middleware/ ./middleware/
 COPY node/ ./node/
+COPY storage/ ./storage/
 COPY config/ ./config/
 
 # Build the application

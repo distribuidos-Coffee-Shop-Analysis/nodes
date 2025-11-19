@@ -34,3 +34,9 @@ type Aggregate interface {
 	// Called after finalization to prevent memory leaks
 	Cleanup() error
 }
+
+// PersistentAggregate marks aggregates that can serialize their state to disk and restore it.
+type PersistentAggregate interface {
+	SerializeState() ([]byte, error)
+	RestoreState(data []byte) error
+}

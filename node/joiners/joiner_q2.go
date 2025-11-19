@@ -1,11 +1,11 @@
 package joiners
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
 
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
@@ -15,29 +15,17 @@ type Q2JoinerState struct {
 
 // Q2Joiner handles joining Q2 aggregate data with menu item names
 type Q2Joiner struct {
-	state       *Q2JoinerState
-	mu          sync.RWMutex
-	persistence *common.StatePersistence
-	clientID    string
+	state    *Q2JoinerState
+	mu       sync.RWMutex
+	clientID string
 }
 
 // NewQ2Joiner creates a new Q2Joiner instance
 func NewQ2Joiner() *Q2Joiner {
-	return NewQ2JoinerWithPersistence("/app/state")
-}
-
-func NewQ2JoinerWithPersistence(stateDir string) *Q2Joiner {
-	persistence, err := common.NewStatePersistence(stateDir)
-	if err != nil {
-		log.Printf("action: q2_joiner_init | result: fail | error: %v | fallback: memory_only", err)
-		persistence = nil
-	}
-
 	return &Q2Joiner{
 		state: &Q2JoinerState{
 			MenuItems: make(map[string]*protocol.MenuItemRecord),
 		},
-		persistence: persistence,
 	}
 }
 
@@ -51,8 +39,6 @@ func (j *Q2Joiner) StoreReferenceDataset(records []protocol.Record) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	log.Printf("action: q2_store_reference_data | count: %d", len(records))
-
 	for _, record := range records {
 		menuItem, ok := record.(*protocol.MenuItemRecord)
 		if !ok {
@@ -60,17 +46,6 @@ func (j *Q2Joiner) StoreReferenceDataset(records []protocol.Record) error {
 		}
 
 		j.state.MenuItems[menuItem.ItemID] = menuItem
-		log.Printf("action: q2_menu_item_stored | item_id: %s | item_name: %s",
-			menuItem.ItemID, menuItem.ItemName)
-	}
-
-	log.Printf("action: q2_reference_data_stored | total_items: %d", len(j.state.MenuItems))
-
-	if j.persistence != nil && j.clientID != "" {
-		if err := j.persistence.SaveState(j.Name(), j.clientID, j.state); err != nil {
-			log.Printf("action: q2_joiner_save_state | result: fail | client_id: %s | error: %v",
-				j.clientID, err)
-		}
 	}
 
 	return nil
@@ -78,25 +53,8 @@ func (j *Q2Joiner) StoreReferenceDataset(records []protocol.Record) error {
 
 // PerformJoin joins Q2 aggregated data with stored menu items
 func (j *Q2Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId string) ([]protocol.Record, error) {
-
 	if j.clientID == "" {
 		j.clientID = clientId
-
-		if j.persistence != nil {
-			var savedState Q2JoinerState
-			if err := j.persistence.LoadState(j.Name(), clientId, &savedState); err != nil {
-				log.Printf("action: q2_joiner_load_state | result: fail | client_id: %s | error: %v",
-					clientId, err)
-			} else if savedState.MenuItems != nil {
-				j.mu.Lock()
-				for key, item := range savedState.MenuItems {
-					j.state.MenuItems[key] = item
-				}
-				j.mu.Unlock()
-				log.Printf("action: q2_joiner_load_state | result: success | client_id: %s | items: %d",
-					clientId, len(savedState.MenuItems))
-			}
-		}
 	}
 
 	j.mu.RLock()
@@ -165,20 +123,41 @@ func (j *Q2Joiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ2Agg
 }
 
-// Cleanup releases resources and deletes state file
+// Cleanup releases resources
+// Note: We keep reference data because multiple EOF batches may arrive from upstream
+// Menu items dataset is small (~100 rows, ~10KB) so keeping it in memory is fine
 func (j *Q2Joiner) Cleanup() error {
+	// No-op: we keep reference data to handle multiple EOF batches
+	return nil
+}
+
+// SerializeState exports the current joiner state as compact JSON
+func (j *Q2Joiner) SerializeState() ([]byte, error) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+
+	return json.Marshal(j.state)
+}
+
+// RestoreState restores the joiner state from a JSON snapshot
+func (j *Q2Joiner) RestoreState(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	var state Q2JoinerState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("decode q2 joiner snapshot: %w", err)
+	}
+
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	if j.persistence != nil && j.clientID != "" {
-		if err := j.persistence.DeleteState(j.Name(), j.clientID); err != nil {
-			log.Printf("action: q2_joiner_delete_state | result: fail | client_id: %s | error: %v",
-				j.clientID, err)
-		}
+	if state.MenuItems != nil {
+		j.state.MenuItems = state.MenuItems
+	} else {
+		j.state.MenuItems = make(map[string]*protocol.MenuItemRecord)
 	}
-
-	j.state.MenuItems = nil
-	j.state = nil
 
 	return nil
 }

@@ -1,11 +1,10 @@
 package joiners
 
 import (
+	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
@@ -15,29 +14,17 @@ type Q4StoreJoinerState struct {
 
 // Q4StoreJoiner handles the second join in Q4: joining user-joined data with store names
 type Q4StoreJoiner struct {
-	state       *Q4StoreJoinerState
-	mu          sync.RWMutex
-	persistence *common.StatePersistence
-	clientID    string
+	state    *Q4StoreJoinerState
+	mu       sync.RWMutex
+	clientID string
 }
 
 // NewQ4StoreJoiner creates a new Q4StoreJoiner instance
 func NewQ4StoreJoiner() *Q4StoreJoiner {
-	return NewQ4StoreJoinerWithPersistence("/app/state")
-}
-
-func NewQ4StoreJoinerWithPersistence(stateDir string) *Q4StoreJoiner {
-	persistence, err := common.NewStatePersistence(stateDir)
-	if err != nil {
-		log.Printf("action: q4_store_joiner_init | result: fail | error: %v | fallback: memory_only", err)
-		persistence = nil
-	}
-
 	return &Q4StoreJoiner{
 		state: &Q4StoreJoinerState{
 			Stores: make(map[string]*protocol.StoreRecord),
 		},
-		persistence: persistence,
 	}
 }
 
@@ -51,8 +38,6 @@ func (j *Q4StoreJoiner) StoreReferenceDataset(records []protocol.Record) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	log.Printf("action: q4_store_store_reference_data | count: %d", len(records))
-
 	for _, record := range records {
 		storeRecord, ok := record.(*protocol.StoreRecord)
 		if !ok {
@@ -60,17 +45,6 @@ func (j *Q4StoreJoiner) StoreReferenceDataset(records []protocol.Record) error {
 		}
 
 		j.state.Stores[storeRecord.StoreID] = storeRecord
-		log.Printf("action: q4_store_stored | store_id: %s | store_name: %s",
-			storeRecord.StoreID, storeRecord.StoreName)
-	}
-
-	log.Printf("action: q4_store_reference_data_stored | total_stores: %d", len(j.state.Stores))
-
-	if j.persistence != nil && j.clientID != "" {
-		if err := j.persistence.SaveState(j.Name(), j.clientID, j.state); err != nil {
-			log.Printf("action: q4_store_joiner_save_state | result: fail | client_id: %s | error: %v",
-				j.clientID, err)
-		}
 	}
 
 	return nil
@@ -78,25 +52,8 @@ func (j *Q4StoreJoiner) StoreReferenceDataset(records []protocol.Record) error {
 
 // PerformJoin joins Q4 user-joined data with stored store information to produce final output
 func (j *Q4StoreJoiner) PerformJoin(userJoinedRecords []protocol.Record, clientId string) ([]protocol.Record, error) {
-
 	if j.clientID == "" {
 		j.clientID = clientId
-
-		if j.persistence != nil {
-			var savedState Q4StoreJoinerState
-			if err := j.persistence.LoadState(j.Name(), clientId, &savedState); err != nil {
-				log.Printf("action: q4_store_joiner_load_state | result: fail | client_id: %s | error: %v",
-					clientId, err)
-			} else if savedState.Stores != nil {
-				j.mu.Lock()
-				for key, store := range savedState.Stores {
-					j.state.Stores[key] = store
-				}
-				j.mu.Unlock()
-				log.Printf("action: q4_store_joiner_load_state | result: success | client_id: %s | stores: %d",
-					clientId, len(savedState.Stores))
-			}
-		}
 	}
 
 	j.mu.RLock()
@@ -110,23 +67,19 @@ func (j *Q4StoreJoiner) PerformJoin(userJoinedRecords []protocol.Record, clientI
 			return nil, fmt.Errorf("expected Q4JoinedWithUserRecord, got %T", record)
 		}
 
-		// Join with store information
+		// Join user-joined data with store names
 		storeRecord, exists := j.state.Stores[userJoinedRecord.StoreID]
 		if !exists {
 			continue // Skip records without matching stores
 		}
 
-		// Create final record with store_name, purchases_qty, and birthdate
-		finalRecord := &protocol.Q4JoinedWithStoreAndUserRecord{
+		joinedRecord := &protocol.Q4JoinedWithStoreAndUserRecord{
 			StoreName:    storeRecord.StoreName,
 			PurchasesQty: userJoinedRecord.PurchasesQty,
 			Birthdate:    userJoinedRecord.Birthdate,
 		}
-		joinedRecords = append(joinedRecords, finalRecord)
+		joinedRecords = append(joinedRecords, joinedRecord)
 	}
-
-	log.Printf("action: q4_store_join_complete | client_id: %s | input: %d | joined: %d",
-		clientId, len(userJoinedRecords), len(joinedRecords))
 
 	return joinedRecords, nil
 }
@@ -146,20 +99,42 @@ func (j *Q4StoreJoiner) AcceptsAggregateType(datasetType protocol.DatasetType) b
 	return datasetType == protocol.DatasetTypeQ4AggWithUser
 }
 
-// Cleanup releases resources and deletes state file
+// Cleanup releases resources
+// Note: We keep reference data because multiple EOF batches may arrive from upstream
+// (e.g., 5 Q4 User Joiners all send EOF to 1 Q4 Store Joiner)
+// Stores dataset is tiny (~10 rows, ~1KB) so keeping it in memory is fine
 func (j *Q4StoreJoiner) Cleanup() error {
+	// No-op: we keep reference data to handle multiple EOF batches
+	return nil
+}
+
+// SerializeState exports the current joiner state as compact JSON
+func (j *Q4StoreJoiner) SerializeState() ([]byte, error) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+
+	return json.Marshal(j.state)
+}
+
+// RestoreState restores the joiner state from a JSON snapshot
+func (j *Q4StoreJoiner) RestoreState(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	var state Q4StoreJoinerState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("decode q4 store joiner snapshot: %w", err)
+	}
+
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	if j.persistence != nil && j.clientID != "" {
-		if err := j.persistence.DeleteState(j.Name(), j.clientID); err != nil {
-			log.Printf("action: q4_store_joiner_delete_state | result: fail | client_id: %s | error: %v",
-				j.clientID, err)
-		}
+	if state.Stores != nil {
+		j.state.Stores = state.Stores
+	} else {
+		j.state.Stores = make(map[string]*protocol.StoreRecord)
 	}
-
-	j.state.Stores = nil
-	j.state = nil
 
 	return nil
 }

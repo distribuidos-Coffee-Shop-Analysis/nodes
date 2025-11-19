@@ -1,11 +1,10 @@
 package joiners
 
 import (
+	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 
-	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
@@ -15,29 +14,17 @@ type Q3JoinerState struct {
 
 // Q3Joiner handles joining Q3 aggregate data with store names
 type Q3Joiner struct {
-	state       *Q3JoinerState
-	mu          sync.RWMutex
-	persistence *common.StatePersistence
-	clientID    string
+	state    *Q3JoinerState
+	mu       sync.RWMutex
+	clientID string
 }
 
 // NewQ3Joiner creates a new Q3Joiner instance
 func NewQ3Joiner() *Q3Joiner {
-	return NewQ3JoinerWithPersistence("/app/state")
-}
-
-func NewQ3JoinerWithPersistence(stateDir string) *Q3Joiner {
-	persistence, err := common.NewStatePersistence(stateDir)
-	if err != nil {
-		log.Printf("action: q3_joiner_init | result: fail | error: %v | fallback: memory_only", err)
-		persistence = nil
-	}
-
 	return &Q3Joiner{
 		state: &Q3JoinerState{
 			Stores: make(map[string]*protocol.StoreRecord),
 		},
-		persistence: persistence,
 	}
 }
 
@@ -51,8 +38,6 @@ func (j *Q3Joiner) StoreReferenceDataset(records []protocol.Record) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	log.Printf("action: q3_store_reference_data | count: %d", len(records))
-
 	for _, record := range records {
 		storeRecord, ok := record.(*protocol.StoreRecord)
 		if !ok {
@@ -60,17 +45,6 @@ func (j *Q3Joiner) StoreReferenceDataset(records []protocol.Record) error {
 		}
 
 		j.state.Stores[storeRecord.StoreID] = storeRecord
-		log.Printf("action: q3_store_stored | store_id: %s | store_name: %s",
-			storeRecord.StoreID, storeRecord.StoreName)
-	}
-
-	log.Printf("action: q3_reference_data_stored | total_stores: %d", len(j.state.Stores))
-
-	if j.persistence != nil && j.clientID != "" {
-		if err := j.persistence.SaveState(j.Name(), j.clientID, j.state); err != nil {
-			log.Printf("action: q3_joiner_save_state | result: fail | client_id: %s | error: %v",
-				j.clientID, err)
-		}
 	}
 
 	return nil
@@ -78,25 +52,8 @@ func (j *Q3Joiner) StoreReferenceDataset(records []protocol.Record) error {
 
 // PerformJoin joins Q3 aggregated data with stored store information
 func (j *Q3Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId string) ([]protocol.Record, error) {
-
 	if j.clientID == "" {
 		j.clientID = clientId
-
-		if j.persistence != nil {
-			var savedState Q3JoinerState
-			if err := j.persistence.LoadState(j.Name(), clientId, &savedState); err != nil {
-				log.Printf("action: q3_joiner_load_state | result: fail | client_id: %s | error: %v",
-					clientId, err)
-			} else if savedState.Stores != nil {
-				j.mu.Lock()
-				for key, store := range savedState.Stores {
-					j.state.Stores[key] = store
-				}
-				j.mu.Unlock()
-				log.Printf("action: q3_joiner_load_state | result: success | client_id: %s | stores: %d",
-					clientId, len(savedState.Stores))
-			}
-		}
 	}
 
 	j.mu.RLock()
@@ -113,7 +70,6 @@ func (j *Q3Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId str
 		// Join aggregated data with store names
 		storeRecord, exists := j.state.Stores[aggRecord.StoreID]
 		if !exists {
-			log.Printf("action: q3_join_warning | client_id: %s | store_id: %s | error: store_not_found", clientId, aggRecord.StoreID)
 			continue // Skip records without matching stores
 		}
 
@@ -123,12 +79,7 @@ func (j *Q3Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId str
 			TPV:       aggRecord.TPV,
 		}
 		joinedRecords = append(joinedRecords, joinedRecord)
-
-		log.Printf("action: q3_join_success | client_id: %s | year_half: %s | store_id: %s | store_name: %s | tpv: %s",
-			clientId, aggRecord.YearHalf, aggRecord.StoreID, storeRecord.StoreName, aggRecord.TPV)
 	}
-
-	log.Printf("action: q3_join_complete | client_id: %s | total_joined: %d", clientId, len(joinedRecords))
 
 	return joinedRecords, nil
 }
@@ -148,20 +99,41 @@ func (j *Q3Joiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ3Agg
 }
 
-// Cleanup releases resources and deletes state file
+// Cleanup releases resources
+// Note: We keep reference data because multiple EOF batches may arrive from upstream
+// Stores dataset is tiny (~10 rows, ~1KB) so keeping it in memory is fine
 func (j *Q3Joiner) Cleanup() error {
+	// No-op: we keep reference data to handle multiple EOF batches
+	return nil
+}
+
+// SerializeState exports the current joiner state as compact JSON
+func (j *Q3Joiner) SerializeState() ([]byte, error) {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+
+	return json.Marshal(j.state)
+}
+
+// RestoreState restores the joiner state from a JSON snapshot
+func (j *Q3Joiner) RestoreState(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	var state Q3JoinerState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("decode q3 joiner snapshot: %w", err)
+	}
+
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	if j.persistence != nil && j.clientID != "" {
-		if err := j.persistence.DeleteState(j.Name(), j.clientID); err != nil {
-			log.Printf("action: q3_joiner_delete_state | result: fail | client_id: %s | error: %v",
-				j.clientID, err)
-		}
+	if state.Stores != nil {
+		j.state.Stores = state.Stores
+	} else {
+		j.state.Stores = make(map[string]*protocol.StoreRecord)
 	}
-
-	j.state.Stores = nil
-	j.state = nil
 
 	return nil
 }

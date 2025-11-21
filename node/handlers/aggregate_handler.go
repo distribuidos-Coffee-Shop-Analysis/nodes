@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"sort"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
@@ -20,14 +22,13 @@ import (
 
 // AggregateClientState holds per-client state for aggregate operations
 type AggregateClientState struct {
-	mu                      sync.Mutex
-	aggregate               aggregates.Aggregate
-	eofReceived             bool
-	oneTimeFinalize         bool
-	expectedTotalBatches    int
-	seenBatchIndices        map[int]bool
-	uniqueBatchCount        atomic.Int32
-	batchesSinceLastPersist int // Counter to reduce persistence frequency
+	mu                   sync.Mutex
+	aggregate            aggregates.Aggregate
+	eofReceived          bool
+	oneTimeFinalize      bool
+	expectedTotalBatches int
+	seenBatchIndices     map[int]bool
+	uniqueBatchCount     atomic.Int32
 }
 
 // AggregateHandler manages aggregate operations for multiple clients
@@ -39,7 +40,8 @@ type AggregateHandler struct {
 	pub   *middleware.Publisher
 	pubMu sync.Mutex
 
-	stateStore storage.StateStore
+	stateStore        storage.StateStore
+	shutdownRequested atomic.Bool // Set to true when SIGTERM/SIGINT received
 }
 
 type aggregateSnapshotMetadata struct {
@@ -50,10 +52,36 @@ type aggregateSnapshotMetadata struct {
 
 // NewAggregateHandler creates a new aggregate handler with a factory function
 func NewAggregateHandler(newAggregate func() aggregates.Aggregate) *AggregateHandler {
-	return &AggregateHandler{
+	h := &AggregateHandler{
 		newAggregate: newAggregate,
 		states:       make(map[string]*AggregateClientState),
 	}
+
+	// Setup graceful shutdown handler
+	h.setupShutdownHandler()
+
+	return h
+}
+
+// setupShutdownHandler installs signal handlers for graceful shutdown
+func (h *AggregateHandler) setupShutdownHandler() {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		sig := <-sigChan
+		log.Printf("action: aggregate_shutdown_signal_received | signal: %v | persisting_all_states: true", sig)
+
+		h.shutdownRequested.Store(true)
+
+		// Persist all active client states before shutdown
+		h.persistAllStates()
+
+		log.Printf("action: aggregate_shutdown_persist_complete | signal: %v", sig)
+
+		// Exit gracefully
+		os.Exit(0)
+	}()
 }
 
 func (h *AggregateHandler) Name() string {
@@ -174,29 +202,26 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 		state.oneTimeFinalize = false // Ensure finalize runs only once
 	}
 
-	// Increment batch counter for persistence frequency control
-	state.batchesSinceLastPersist++
-
-	// Determine if we should persist now:
-	// 1. Always persist on EOF (to ensure recoverability before finalization)
-	// 2. Every 2000 batches (to reduce I/O overhead, especially for Q4 with huge state)
-	// 3. Always persist before finalization
-	shouldPersist := batchMessage.EOF || state.batchesSinceLastPersist >= 2000 || shouldFinalize
+	// Persistence strategy: ONLY persist on EOF (when client finishes)
+	// - During normal operation: zero I/O, everything in memory
+	// - On EOF: persist once before finalization (includes batch indices)
+	// - On SIGTERM/SIGINT: graceful shutdown persists all active states
+	shouldPersist := batchMessage.EOF || shouldFinalize
 
 	state.mu.Unlock()
 
-	// Persist state periodically, not on every batch (reduces memory pressure and I/O)
+	// Persist state only when client finishes (EOF received)
 	if shouldPersist {
-		if err := h.persistClientState(clientID, state); err != nil {
+		// Persist with batch indices for complete recovery snapshot
+		if err := h.persistClientStateWithBatches(clientID, state); err != nil {
 			log.Printf("action: aggregate_persist_state | client_id: %s | aggregate: %s | result: fail | error: %v",
 				clientID, state.aggregate.Name(), err)
 			msg.Nack(false, true)
 			return err
 		}
 
-		state.mu.Lock()
-		state.batchesSinceLastPersist = 0
-		state.mu.Unlock()
+		log.Printf("action: aggregate_persist_state | client_id: %s | aggregate: %s | result: success | reason: eof",
+			clientID, state.aggregate.Name())
 	}
 
 	if shouldFinalize {
@@ -251,6 +276,12 @@ func (h *AggregateHandler) cleanupClientState(clientID string, state *AggregateC
 	h.statesMu.Lock()
 	delete(h.states, clientID)
 	h.statesMu.Unlock()
+
+	// Force garbage collection to release memory back to the OS
+	// This is important for aggregates that accumulated large amounts of data
+	// runtime.GC()
+
+	// log.Printf("action: aggregate_cleanup_complete | client_id: %s | gc_triggered: true", clientID)
 }
 
 // publishBatches publishes all batches, using custom routing keys when provided
@@ -301,16 +332,23 @@ func (h *AggregateHandler) persistClientState(clientID string, state *AggregateC
 	}
 
 	// Persist main snapshot (metadata + data)
-	if err := h.stateStore.Persist(clientID, &storage.Snapshot{
+	return h.stateStore.Persist(clientID, &storage.Snapshot{
 		Metadata: metaBytes,
 		Data:     data,
-	}); err != nil {
+	})
+}
+
+// persistClientStateWithBatches persists state AND batch indices (only called on EOF)
+func (h *AggregateHandler) persistClientStateWithBatches(clientID string, state *AggregateClientState) error {
+	if err := h.persistClientState(clientID, state); err != nil {
 		return err
 	}
 
-	batchIndices := state.getBatchIndices()
-	if err := h.stateStore.PersistBatchIndices(clientID, batchIndices); err != nil {
-		return fmt.Errorf("persist batch indices: %w", err)
+	if h.stateStore != nil {
+		batchIndices := state.getBatchIndices()
+		if err := h.stateStore.PersistBatchIndices(clientID, batchIndices); err != nil {
+			return fmt.Errorf("persist batch indices: %w", err)
+		}
 	}
 
 	return nil
@@ -372,6 +410,27 @@ func (h *AggregateHandler) deleteClientSnapshot(clientID string) {
 	if err := h.stateStore.DeleteBatchIndices(clientID); err != nil {
 		if !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: aggregate_batch_indices_delete | client_id: %s | result: fail | error: %v", clientID, err)
+		}
+	}
+}
+
+// persistAllStates persists all active client states (called during graceful shutdown)
+func (h *AggregateHandler) persistAllStates() {
+	h.statesMu.RLock()
+	clientIDs := make([]string, 0, len(h.states))
+	for clientID := range h.states {
+		clientIDs = append(clientIDs, clientID)
+	}
+	h.statesMu.RUnlock()
+
+	for _, clientID := range clientIDs {
+		state := h.states[clientID]
+		if state != nil {
+			if err := h.persistClientStateWithBatches(clientID, state); err != nil {
+				log.Printf("action: aggregate_shutdown_persist | client_id: %s | result: fail | error: %v", clientID, err)
+			} else {
+				log.Printf("action: aggregate_shutdown_persist | client_id: %s | result: success", clientID)
+			}
 		}
 	}
 }

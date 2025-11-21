@@ -63,9 +63,17 @@ func NewFileStateStore(baseDir, role string) (*FileStateStore, error) {
 		return nil, fmt.Errorf("create role state dir %s: %w", roleDir, err)
 	}
 
-	return &FileStateStore{
+	store := &FileStateStore{
 		roleDir: roleDir,
-	}, nil
+	}
+
+	// Clean up any orphaned temporary files from previous crashes
+	if err := store.cleanupOrphanedTempFiles(); err != nil {
+		// Log but don't fail - this is a best-effort cleanup
+		fmt.Printf("warning: failed to cleanup orphaned temp files in %s: %v\n", roleDir, err)
+	}
+
+	return store, nil
 }
 
 // Persist writes the provided snapshot atomically for the given client.
@@ -227,6 +235,37 @@ func (s *FileStateStore) DeleteBatchIndices(clientID string) error {
 	return nil
 }
 
+// cleanupOrphanedTempFiles removes leftover temporary files from previous crashes
+func (s *FileStateStore) cleanupOrphanedTempFiles() error {
+	entries, err := os.ReadDir(s.roleDir)
+	if err != nil {
+		return err
+	}
+
+	cleaned := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		// Remove files matching the temp file pattern: "state-*"
+		name := entry.Name()
+		if len(name) > 6 && name[:6] == "state-" {
+			fullPath := filepath.Join(s.roleDir, name)
+			if err := os.Remove(fullPath); err != nil {
+				fmt.Printf("warning: failed to remove orphaned temp file %s: %v\n", fullPath, err)
+			} else {
+				cleaned++
+			}
+		}
+	}
+
+	if cleaned > 0 {
+		fmt.Printf("info: cleaned up %d orphaned temp files in %s\n", cleaned, s.roleDir)
+	}
+
+	return nil
+}
+
 func writeAtomically(targetPath string, data []byte) error {
 	dir := filepath.Dir(targetPath)
 	tmpFile, err := os.CreateTemp(dir, "state-*")
@@ -235,27 +274,32 @@ func writeAtomically(targetPath string, data []byte) error {
 	}
 
 	tmpName := tmpFile.Name()
+
+	// Ensure cleanup in ALL error paths using defer
+	success := false
+	defer func() {
+		if !success {
+			tmpFile.Close()
+			os.Remove(tmpName)
+		}
+	}()
+
 	if _, err := tmpFile.Write(data); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpName)
 		return fmt.Errorf("write temp file %s: %w", tmpName, err)
 	}
 
 	if err := tmpFile.Sync(); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpName)
 		return fmt.Errorf("sync temp file %s: %w", tmpName, err)
 	}
 
 	if err := tmpFile.Close(); err != nil {
-		os.Remove(tmpName)
 		return fmt.Errorf("close temp file %s: %w", tmpName, err)
 	}
 
 	if err := os.Rename(tmpName, targetPath); err != nil {
-		os.Remove(tmpName)
 		return fmt.Errorf("rename temp file %s to %s: %w", tmpName, targetPath, err)
 	}
 
+	success = true
 	return nil
 }

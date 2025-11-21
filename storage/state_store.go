@@ -18,17 +18,28 @@ type Snapshot struct {
 	Data     []byte
 }
 
+// BatchIndicesSnapshot holds seen batch indices for aggregates
+type BatchIndicesSnapshot struct {
+	Indices []int
+}
+
 // StateStore abstracts the persistence mechanism used by stateful handlers.
 type StateStore interface {
 	Persist(clientID string, snapshot *Snapshot) error
 	Load(clientID string) (*Snapshot, error)
 	Delete(clientID string) error
+
+	// Batch indices persistence (for aggregates with millions of batches)
+	PersistBatchIndices(clientID string, indices []int) error
+	LoadBatchIndices(clientID string) ([]int, error)
+	DeleteBatchIndices(clientID string) error
 }
 
 // FileStateStore is a filesystem-backed implementation of StateStore.
-// It stores two files per client inside <baseDir>/<role>:
-//   - <client>.meta (metadata)
-//   - <client>.txt  (handler-defined payload)
+// It stores three binary files per client inside <baseDir>/<role>:
+//   - meta_<client>.bin (metadata)
+//   - data_<client>.bin (handler-defined payload)
+//   - batches_<client>.bin (seen batch indices, one per line)
 type FileStateStore struct {
 	roleDir string
 	locks   sync.Map // map[string]*clientLock
@@ -131,13 +142,89 @@ func (s *FileStateStore) getLock(clientID string) *clientLock {
 }
 
 func (s *FileStateStore) metaPath(clientID string) string {
-	filename := fmt.Sprintf("%s.meta", clientID)
+	filename := fmt.Sprintf("meta_%s.bin", clientID)
 	return filepath.Join(s.roleDir, filename)
 }
 
 func (s *FileStateStore) dataPath(clientID string) string {
-	filename := fmt.Sprintf("%s.txt", clientID)
+	filename := fmt.Sprintf("data_%s.bin", clientID)
 	return filepath.Join(s.roleDir, filename)
+}
+
+func (s *FileStateStore) batchesPath(clientID string) string {
+	filename := fmt.Sprintf("batches_%s.bin", clientID)
+	return filepath.Join(s.roleDir, filename)
+}
+
+// PersistBatchIndices writes batch indices to a separate file using efficient format
+// Format: one integer per line
+func (s *FileStateStore) PersistBatchIndices(clientID string, indices []int) error {
+	if len(indices) == 0 {
+		return nil
+	}
+
+	lock := s.getLock(clientID)
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+
+	var buf []byte
+	capacity := len(indices) * 10
+	buf = make([]byte, 0, capacity)
+
+	for _, idx := range indices {
+		buf = append(buf, fmt.Sprintf("%d\n", idx)...)
+	}
+
+	return writeAtomically(s.batchesPath(clientID), buf)
+}
+
+// LoadBatchIndices reads batch indices from file
+func (s *FileStateStore) LoadBatchIndices(clientID string) ([]int, error) {
+	lock := s.getLock(clientID)
+	lock.mu.RLock()
+	defer lock.mu.RUnlock()
+
+	data, err := os.ReadFile(s.batchesPath(clientID))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrSnapshotNotFound
+		}
+		return nil, err
+	}
+
+	if len(data) == 0 {
+		return []int{}, nil
+	}
+
+	var indices []int
+	var num int
+	start := 0
+	for i := 0; i < len(data); i++ {
+		if data[i] == '\n' {
+			if i > start {
+				_, err := fmt.Sscanf(string(data[start:i]), "%d", &num)
+				if err == nil {
+					indices = append(indices, num)
+				}
+			}
+			start = i + 1
+		}
+	}
+
+	return indices, nil
+}
+
+// DeleteBatchIndices removes the batch indices file
+func (s *FileStateStore) DeleteBatchIndices(clientID string) error {
+	lock := s.getLock(clientID)
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+
+	if err := os.Remove(s.batchesPath(clientID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	return nil
 }
 
 func writeAtomically(targetPath string, data []byte) error {

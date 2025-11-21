@@ -1,8 +1,11 @@
 package joiners
 
 import (
-	"encoding/json"
+	"bufio"
+	"bytes"
 	"fmt"
+	"log"
+	"strings"
 	"sync"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
@@ -107,33 +110,84 @@ func (j *Q3Joiner) Cleanup() error {
 	return nil
 }
 
-// SerializeState exports the current joiner state as compact JSON
+// SerializeState exports the current joiner state using pipe-delimited format
+// Format: store_id|store_name|street|postal_code|city|state|latitude|longitude\n
 func (j *Q3Joiner) SerializeState() ([]byte, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
-	return json.Marshal(j.state)
+	var buf bytes.Buffer
+	buf.Grow(len(j.state.Stores) * 150)
+
+	for storeID, store := range j.state.Stores {
+		buf.WriteString(storeID)
+		buf.WriteByte('|')
+		buf.WriteString(store.StoreName)
+		buf.WriteByte('|')
+		buf.WriteString(store.Street)
+		buf.WriteByte('|')
+		buf.WriteString(store.PostalCode)
+		buf.WriteByte('|')
+		buf.WriteString(store.City)
+		buf.WriteByte('|')
+		buf.WriteString(store.State)
+		buf.WriteByte('|')
+		buf.WriteString(store.Latitude)
+		buf.WriteByte('|')
+		buf.WriteString(store.Longitude)
+		buf.WriteByte('\n')
+	}
+
+	return buf.Bytes(), nil
 }
 
-// RestoreState restores the joiner state from a JSON snapshot
+// RestoreState restores the joiner state from pipe-delimited format
 func (j *Q3Joiner) RestoreState(data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
 
-	var state Q3JoinerState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return fmt.Errorf("decode q3 joiner snapshot: %w", err)
-	}
-
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	if state.Stores != nil {
-		j.state.Stores = state.Stores
-	} else {
-		j.state.Stores = make(map[string]*protocol.StoreRecord)
+	j.state.Stores = make(map[string]*protocol.StoreRecord)
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+
+		if len(line) == 0 {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) != 8 {
+			log.Printf("action: q3_joiner_restore_skip_invalid_line | line: %d | parts: %d", lineNum, len(parts))
+			continue
+		}
+
+		store := &protocol.StoreRecord{
+			StoreID:    parts[0],
+			StoreName:  parts[1],
+			Street:     parts[2],
+			PostalCode: parts[3],
+			City:       parts[4],
+			State:      parts[5],
+			Latitude:   parts[6],
+			Longitude:  parts[7],
+		}
+
+		j.state.Stores[store.StoreID] = store
 	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan q3 joiner snapshot: %w", err)
+	}
+
+	log.Printf("action: q3_joiner_restore_complete | stores: %d", len(j.state.Stores))
 
 	return nil
 }

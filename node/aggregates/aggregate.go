@@ -33,10 +33,14 @@ type Aggregate interface {
 	// This includes clearing maps, slices, and closing any open file descriptors
 	// Called after finalization to prevent memory leaks
 	Cleanup() error
-}
 
-// PersistentAggregate marks aggregates that can serialize their state to disk and restore it.
-type PersistentAggregate interface {
+	// PERSISTANCY 
+	
+	// SerializeState exports the aggregate state as a byte slice
+	// This is used to persist the state to disk
 	SerializeState() ([]byte, error)
+
+	// RestoreState restores the aggregate state from a byte slice
+	// This is used to restore the state from disk
 	RestoreState(data []byte) error
 }

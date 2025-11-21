@@ -309,12 +309,7 @@ func (h *JoinerHandler) persistClientState(clientID string, state *JoinerClientS
 		return nil
 	}
 
-	persistable, ok := state.joiner.(joiners.PersistentJoiner)
-	if !ok {
-		return nil
-	}
-
-	data, err := persistable.SerializeState()
+	data, err := state.joiner.SerializeState()
 	if err != nil {
 		return fmt.Errorf("serialize joiner state: %w", err)
 	}
@@ -336,11 +331,6 @@ func (h *JoinerHandler) restoreClientState(clientID string, state *JoinerClientS
 		return
 	}
 
-	persistable, ok := state.joiner.(joiners.PersistentJoiner)
-	if !ok {
-		return
-	}
-
 	snapshot, err := h.stateStore.Load(clientID)
 	if err != nil {
 		if !errors.Is(err, storage.ErrSnapshotNotFound) {
@@ -350,7 +340,7 @@ func (h *JoinerHandler) restoreClientState(clientID string, state *JoinerClientS
 	}
 
 	if len(snapshot.Data) > 0 {
-		if err := persistable.RestoreState(snapshot.Data); err != nil {
+		if err := state.joiner.RestoreState(snapshot.Data); err != nil {
 			log.Printf("action: joiner_restore_state | client_id: %s | joiner: %s | result: fail | error: %v",
 				clientID, state.joiner.Name(), err)
 			return

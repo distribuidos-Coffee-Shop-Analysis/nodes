@@ -42,14 +42,10 @@ type AggregateHandler struct {
 	stateStore storage.StateStore
 }
 
-const aggregateSnapshotVersion = 1
-
 type aggregateSnapshotMetadata struct {
-	Version              int   `json:"version"`
-	SeenBatches          []int `json:"seen_batches"`
-	EOFReceived          bool  `json:"eof_received"`
-	ExpectedTotalBatches int   `json:"expected_total_batches"`
-	OneTimeFinalize      bool  `json:"one_time_finalize"`
+	EOFReceived          bool `json:"eof_received"`
+	ExpectedTotalBatches int  `json:"expected_total_batches"`
+	OneTimeFinalize      bool `json:"one_time_finalize"`
 }
 
 // NewAggregateHandler creates a new aggregate handler with a factory function
@@ -293,36 +289,35 @@ func (h *AggregateHandler) persistClientState(clientID string, state *AggregateC
 		return nil
 	}
 
-	persistable, ok := state.aggregate.(aggregates.PersistentAggregate)
-	if !ok {
-		return nil
-	}
-
-	data, err := persistable.SerializeState()
+	data, err := state.aggregate.SerializeState()
 	if err != nil {
 		return fmt.Errorf("serialize aggregate state: %w", err)
 	}
 
 	meta := state.metadataSnapshot()
-	// Use compact JSON for metadata to reduce file size
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {
 		return fmt.Errorf("encode aggregate metadata: %w", err)
 	}
 
-	return h.stateStore.Persist(clientID, &storage.Snapshot{
+	// Persist main snapshot (metadata + data)
+	if err := h.stateStore.Persist(clientID, &storage.Snapshot{
 		Metadata: metaBytes,
 		Data:     data,
-	})
+	}); err != nil {
+		return err
+	}
+
+	batchIndices := state.getBatchIndices()
+	if err := h.stateStore.PersistBatchIndices(clientID, batchIndices); err != nil {
+		return fmt.Errorf("persist batch indices: %w", err)
+	}
+
+	return nil
 }
 
 func (h *AggregateHandler) restoreClientState(clientID string, state *AggregateClientState) {
 	if h.stateStore == nil {
-		return
-	}
-
-	persistable, ok := state.aggregate.(aggregates.PersistentAggregate)
-	if !ok {
 		return
 	}
 
@@ -335,7 +330,7 @@ func (h *AggregateHandler) restoreClientState(clientID string, state *AggregateC
 	}
 
 	if len(snapshot.Data) > 0 {
-		if err := persistable.RestoreState(snapshot.Data); err != nil {
+		if err := state.aggregate.RestoreState(snapshot.Data); err != nil {
 			log.Printf("action: aggregate_restore_state | client_id: %s | aggregate: %s | result: fail | error: %v",
 				clientID, state.aggregate.Name(), err)
 			return
@@ -350,6 +345,17 @@ func (h *AggregateHandler) restoreClientState(clientID string, state *AggregateC
 			state.applyMetadata(meta)
 		}
 	}
+
+	batchIndices, err := h.stateStore.LoadBatchIndices(clientID)
+	if err != nil {
+		if !errors.Is(err, storage.ErrSnapshotNotFound) {
+			log.Printf("action: aggregate_restore_batch_indices | client_id: %s | result: fail | error: %v", clientID, err)
+		}
+	} else if len(batchIndices) > 0 {
+		state.applyBatchIndices(batchIndices)
+		log.Printf("action: aggregate_restore_batch_indices | client_id: %s | result: success | count: %d",
+			clientID, len(batchIndices))
+	}
 }
 
 func (h *AggregateHandler) deleteClientSnapshot(clientID string) {
@@ -360,6 +366,12 @@ func (h *AggregateHandler) deleteClientSnapshot(clientID string) {
 	if err := h.stateStore.Delete(clientID); err != nil {
 		if !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: aggregate_state_delete | client_id: %s | result: fail | error: %v", clientID, err)
+		}
+	}
+
+	if err := h.stateStore.DeleteBatchIndices(clientID); err != nil {
+		if !errors.Is(err, storage.ErrSnapshotNotFound) {
+			log.Printf("action: aggregate_batch_indices_delete | client_id: %s | result: fail | error: %v", clientID, err)
 		}
 	}
 }
@@ -427,46 +439,51 @@ func (s *AggregateClientState) metadataSnapshot() aggregateSnapshotMetadata {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	indices := make([]int, 0, len(s.seenBatchIndices))
-	for idx := range s.seenBatchIndices {
-		indices = append(indices, idx)
-	}
-	sort.Ints(indices)
-
 	return aggregateSnapshotMetadata{
-		Version:              aggregateSnapshotVersion,
-		SeenBatches:          indices,
 		EOFReceived:          s.eofReceived,
 		ExpectedTotalBatches: s.expectedTotalBatches,
 		OneTimeFinalize:      s.oneTimeFinalize,
 	}
 }
 
-func (s *AggregateClientState) applyMetadata(meta aggregateSnapshotMetadata) {
-	if meta.Version != aggregateSnapshotVersion {
-		log.Printf("action: aggregate_metadata_version_mismatch | expected: %d | got: %d",
-			aggregateSnapshotVersion, meta.Version)
-	}
+// getBatchIndices extracts batch indices from the in-memory map (for persistence)
+func (s *AggregateClientState) getBatchIndices() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
+	indices := make([]int, 0, len(s.seenBatchIndices))
+	for idx := range s.seenBatchIndices {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+	return indices
+}
+
+func (s *AggregateClientState) applyMetadata(meta aggregateSnapshotMetadata) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.eofReceived = meta.EOFReceived
+	s.oneTimeFinalize = meta.OneTimeFinalize
+	s.expectedTotalBatches = meta.ExpectedTotalBatches
+}
+
+// applyBatchIndices restores batch indices into the in-memory map (from persistence)
+func (s *AggregateClientState) applyBatchIndices(indices []int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.seenBatchIndices == nil {
-		s.seenBatchIndices = make(map[int]bool, len(meta.SeenBatches))
+		s.seenBatchIndices = make(map[int]bool, len(indices))
 	} else {
 		for key := range s.seenBatchIndices {
 			delete(s.seenBatchIndices, key)
 		}
 	}
 
-	for _, idx := range meta.SeenBatches {
+	for _, idx := range indices {
 		s.seenBatchIndices[idx] = true
 	}
 
-	s.uniqueBatchCount.Store(int32(len(meta.SeenBatches)))
-	s.eofReceived = meta.EOFReceived
-	s.oneTimeFinalize = meta.OneTimeFinalize
-	s.expectedTotalBatches = meta.ExpectedTotalBatches
-
-	// numberOfBatchesRemaining is deprecated - we now use hasAllBatchesUpTo() for completeness check
+	s.uniqueBatchCount.Store(int32(len(indices)))
 }

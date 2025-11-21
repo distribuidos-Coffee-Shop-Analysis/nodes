@@ -1,9 +1,11 @@
 package joiners
 
 import (
-	"encoding/json"
+	"bufio"
+	"bytes"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
@@ -131,33 +133,81 @@ func (j *Q2Joiner) Cleanup() error {
 	return nil
 }
 
-// SerializeState exports the current joiner state as compact JSON
+// SerializeState exports the current joiner state using pipe-delimited format
+// Format: item_id|item_name|category|price|is_seasonal|available_from|available_to\n
 func (j *Q2Joiner) SerializeState() ([]byte, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
-	return json.Marshal(j.state)
+	var buf bytes.Buffer
+	buf.Grow(len(j.state.MenuItems) * 100)
+
+	for itemID, item := range j.state.MenuItems {
+		buf.WriteString(itemID)
+		buf.WriteByte('|')
+		buf.WriteString(item.ItemName)
+		buf.WriteByte('|')
+		buf.WriteString(item.Category)
+		buf.WriteByte('|')
+		buf.WriteString(item.Price)
+		buf.WriteByte('|')
+		buf.WriteString(item.IsSeasonal)
+		buf.WriteByte('|')
+		buf.WriteString(item.AvailableFrom)
+		buf.WriteByte('|')
+		buf.WriteString(item.AvailableTo)
+		buf.WriteByte('\n')
+	}
+
+	return buf.Bytes(), nil
 }
 
-// RestoreState restores the joiner state from a JSON snapshot
+// RestoreState restores the joiner state from pipe-delimited format
 func (j *Q2Joiner) RestoreState(data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
 
-	var state Q2JoinerState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return fmt.Errorf("decode q2 joiner snapshot: %w", err)
-	}
-
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	if state.MenuItems != nil {
-		j.state.MenuItems = state.MenuItems
-	} else {
-		j.state.MenuItems = make(map[string]*protocol.MenuItemRecord)
+	j.state.MenuItems = make(map[string]*protocol.MenuItemRecord)
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+
+		if len(line) == 0 {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) != 7 {
+			log.Printf("action: q2_joiner_restore_skip_invalid_line | line: %d | parts: %d", lineNum, len(parts))
+			continue
+		}
+
+		menuItem := &protocol.MenuItemRecord{
+			ItemID:        parts[0],
+			ItemName:      parts[1],
+			Category:      parts[2],
+			Price:         parts[3],
+			IsSeasonal:    parts[4],
+			AvailableFrom: parts[5],
+			AvailableTo:   parts[6],
+		}
+
+		j.state.MenuItems[menuItem.ItemID] = menuItem
 	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan q2 joiner snapshot: %w", err)
+	}
+
+	log.Printf("action: q2_joiner_restore_complete | menu_items: %d", len(j.state.MenuItems))
 
 	return nil
 }

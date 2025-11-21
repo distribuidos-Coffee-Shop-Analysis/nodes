@@ -1,8 +1,11 @@
 package joiners
 
 import (
-	"encoding/json"
+	"bufio"
+	"bytes"
 	"fmt"
+	"log"
+	"strings"
 	"sync"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
@@ -114,33 +117,65 @@ func (j *Q4UserJoiner) Cleanup() error {
 	return nil
 }
 
-// SerializeState exports the current joiner state as compact JSON
+// SerializeState exports the current joiner state using pipe-delimited format
+// Format: user_id|birthdate\n
 func (j *Q4UserJoiner) SerializeState() ([]byte, error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
-	return json.Marshal(j.state)
+	var buf bytes.Buffer
+	buf.Grow(len(j.state.Users) * 30)
+
+	for userID, birthdate := range j.state.Users {
+		buf.WriteString(userID)
+		buf.WriteByte('|')
+		buf.WriteString(birthdate)
+		buf.WriteByte('\n')
+	}
+
+	return buf.Bytes(), nil
 }
 
-// RestoreState restores the joiner state from a JSON snapshot
+// RestoreState restores the joiner state from pipe-delimited format
+// Uses streaming to avoid loading entire dataset in memory at once
 func (j *Q4UserJoiner) RestoreState(data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
 
-	var state Q4UserJoinerState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return fmt.Errorf("decode q4 user joiner snapshot: %w", err)
-	}
-
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	if state.Users != nil {
-		j.state.Users = state.Users
-	} else {
-		j.state.Users = make(map[string]string)
+	j.state.Users = make(map[string]string)
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+
+		if len(line) == 0 {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) != 2 {
+			log.Printf("action: q4_user_joiner_restore_skip_invalid_line | line: %d | parts: %d", lineNum, len(parts))
+			continue
+		}
+
+		userID := parts[0]
+		birthdate := parts[1]
+
+		j.state.Users[userID] = birthdate
 	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan q4 user joiner snapshot: %w", err)
+	}
+
+	log.Printf("action: q4_user_joiner_restore_complete | users: %d", len(j.state.Users))
 
 	return nil
 }

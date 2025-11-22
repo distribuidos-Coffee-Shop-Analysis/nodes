@@ -169,6 +169,9 @@ func (a *Q3Aggregate) SerializeState() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// RestoreState restores Q3 aggregate state
+// Format: year_half|store_id|tpv
+// Note: key is composite "year_half|store_id" so we need to reconstruct it
 func (a *Q3Aggregate) RestoreState(data []byte) error {
 	if len(data) == 0 {
 		return nil
@@ -191,13 +194,19 @@ func (a *Q3Aggregate) RestoreState(data []byte) error {
 		}
 
 		parts := strings.Split(line, "|")
-		if len(parts) != 2 {
-			log.Printf("action: q3_restore_skip_invalid_line | line: %d | parts: %d", lineNum, len(parts))
+		if len(parts) != 3 {
+			log.Printf("action: q3_restore_skip_invalid_line | line: %d | parts: %d | expected: 3", lineNum, len(parts))
 			continue
 		}
 
-		key := parts[0]
-		tpv, err := strconv.ParseFloat(parts[1], 64)
+		yearHalf := parts[0]
+		storeID := parts[1]
+		tpvValue := parts[2]
+
+		// Reconstruct composite key: "year_half|store_id"
+		key := yearHalf + "|" + storeID
+
+		tpv, err := strconv.ParseFloat(tpvValue, 64)
 		if err != nil {
 			log.Printf("action: q3_restore_skip_invalid_tpv | line: %d | value: %s | error: %v",
 				lineNum, parts[1], err)

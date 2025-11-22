@@ -27,6 +27,10 @@ type Handler interface {
 	Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection, wiring *common.NodeWiring, clientWG *sync.WaitGroup, delivery amqp091.Delivery) error
 
 	StartHandler(queueManager *middleware.QueueManager, clientWG *sync.WaitGroup) error
+
+	// Shutdown is called during graceful shutdown (SIGTERM/SIGINT)
+	// Stateful handlers should persist their state here
+	Shutdown() error
 }
 
 func NewHandler(role common.NodeRole) Handler {

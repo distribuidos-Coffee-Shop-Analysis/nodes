@@ -16,20 +16,11 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 )
 
-// bufferedBatch holds all necessary information to process a batch later
-type bufferedBatch struct {
-	batchMessage *protocol.BatchMessage
-	connection   *amqp091.Connection
-	wiring       *common.NodeWiring
-	delivery     amqp091.Delivery
-}
-
 // JoinerClientState holds per-client state for joiner operations
 type JoinerClientState struct {
 	mu                       sync.Mutex
 	joiner                   joiners.Joiner
 	referenceDatasetComplete bool
-	bufferedAggregateBatches []bufferedBatch
 }
 
 // JoinerHandler manages join operations for multiple clients
@@ -45,10 +36,7 @@ type JoinerHandler struct {
 	stateStore storage.StateStore
 }
 
-const joinerSnapshotVersion = 1
-
 type joinerSnapshotMetadata struct {
-	Version                  int  `json:"version"`
 	ReferenceDatasetComplete bool `json:"reference_dataset_complete"`
 }
 
@@ -68,6 +56,32 @@ func (h *JoinerHandler) Name() string {
 // sampleName instantiates a temporary joiner just to read its name
 func (h *JoinerHandler) sampleName() string {
 	return h.newJoiner().Name()
+}
+
+// Shutdown persists all active client states for joiner (stateful)
+func (h *JoinerHandler) Shutdown() error {
+	log.Printf("action: joiner_shutdown | result: start | persisting_states: true")
+
+	h.statesMu.RLock()
+	clientIDs := make([]string, 0, len(h.states))
+	for clientID := range h.states {
+		clientIDs = append(clientIDs, clientID)
+	}
+	h.statesMu.RUnlock()
+
+	for _, clientID := range clientIDs {
+		state := h.states[clientID]
+		if state != nil {
+			if err := h.persistClientState(clientID, state); err != nil {
+				log.Printf("action: joiner_shutdown_persist | client_id: %s | result: fail | error: %v", clientID, err)
+			} else {
+				log.Printf("action: joiner_shutdown_persist | client_id: %s | result: success", clientID)
+			}
+		}
+	}
+
+	log.Printf("action: joiner_shutdown | result: success | states_persisted: %d", len(clientIDs))
+	return nil
 }
 
 // getState retrieves or creates the state for a specific client
@@ -93,7 +107,6 @@ func (h *JoinerHandler) getState(clientID string) *JoinerClientState {
 	st := &JoinerClientState{
 		joiner:                   h.newJoiner(),
 		referenceDatasetComplete: false,
-		bufferedAggregateBatches: make([]bufferedBatch, 0),
 	}
 	h.restoreClientState(clientID, st)
 	h.states[clientID] = st
@@ -134,9 +147,9 @@ func (h *JoinerHandler) Handle(batchMessage *protocol.BatchMessage, connection *
 
 	// Route message based on dataset type using joiner's acceptance methods
 	if state.joiner.AcceptsReferenceType(batchMessage.DatasetType) {
-		return h.handleReferenceDataset(state, batchMessage, connection, wiring, msg, clientID)
+		return h.handleReferenceDataset(state, batchMessage, msg, clientID)
 	} else if state.joiner.AcceptsAggregateType(batchMessage.DatasetType) {
-		return h.handleAggregatedData(state, batchMessage, connection, wiring, msg, clientID)
+		return h.handleAggregatedData(state, batchMessage, msg, clientID)
 	} else {
 		log.Printf("action: joiner_handle | client_id: %s | result: fail | error: unsupported dataset type: %s",
 			clientID, batchMessage.DatasetType)
@@ -146,8 +159,7 @@ func (h *JoinerHandler) Handle(batchMessage *protocol.BatchMessage, connection *
 }
 
 // handleReferenceDataset processes and stores reference data (e.g., menu items, stores, users)
-func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMessage *protocol.BatchMessage,
-	connection *amqp091.Connection, wiring *common.NodeWiring, msg amqp091.Delivery, clientID string) error {
+func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMessage *protocol.BatchMessage, msg amqp091.Delivery, clientID string) error {
 
 	// Store reference data using this client's joiner
 	err := state.joiner.StoreReferenceDataset(batchMessage.Records)
@@ -162,9 +174,11 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 	if batchMessage.EOF {
 		state.mu.Lock()
 		state.referenceDatasetComplete = true
-		bufferedBatches := state.bufferedAggregateBatches
-		state.bufferedAggregateBatches = make([]bufferedBatch, 0) // Clear buffer
 		state.mu.Unlock()
+
+		// Get buffered batches from joiner and clear them
+		bufferedBatches := state.joiner.GetBufferedBatches()
+		state.joiner.ClearBufferedBatches()
 
 		log.Printf("action: reference_data_complete | client_id: %s | joiner: %s | buffered_batches: %d",
 			clientID, state.joiner.Name(), len(bufferedBatches))
@@ -180,7 +194,8 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 		if len(bufferedBatches) > 0 {
 			for i, buffered := range bufferedBatches {
 				// Process this buffered batch (perform join and publish)
-				err := h.processAggregatedData(state, buffered.batchMessage, buffered.connection, buffered.wiring, buffered.delivery, clientID)
+				// Don't pass msg delivery since these batches were already ACK'ed when buffered
+				err := h.processAggregatedDataWithoutAck(state, &buffered, clientID)
 				if err != nil {
 					log.Printf("action: process_buffered_batch | client_id: %s | joiner: %s | result: fail | batch_num: %d | error: %v",
 						clientID, state.joiner.Name(), i+1, err)
@@ -195,9 +210,58 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 	return nil
 }
 
+// processAggregatedDataWithoutAck performs the join and publish without ACK/NACK
+// Used for processing buffered batches that were already ACK'ed when buffered
+func (h *JoinerHandler) processAggregatedDataWithoutAck(state *JoinerClientState, batchMessage *protocol.BatchMessage, clientID string) error {
+
+	log.Printf("action: join_aggregate_data | client_id: %s | joiner: %s | records: %d | source: buffered",
+		clientID, state.joiner.Name(), len(batchMessage.Records))
+
+	// Perform join using this client's joiner
+	joinedRecords, err := state.joiner.PerformJoin(batchMessage.Records, clientID)
+	if err != nil {
+		log.Printf("action: perform_join | client_id: %s | joiner: %s | result: fail | error: %v",
+			clientID, state.joiner.Name(), err)
+		return err
+	}
+
+	// Create output batch with joined data (propagate ClientID)
+	outputBatch := h.createOutputBatch(state, batchMessage.BatchIndex, joinedRecords, batchMessage.EOF, clientID)
+
+	// Publish joined results using the shared publisher with mutex protection
+	h.pubMu.Lock()
+	err = h.pub.SendToDatasetOutputExchanges(outputBatch)
+	h.pubMu.Unlock()
+
+	if err != nil {
+		log.Printf("action: joiner_publish | client_id: %s | joiner: %s | result: fail | error: %v",
+			clientID, state.joiner.Name(), err)
+		return err
+	}
+
+	log.Printf("action: joiner_publish | client_id: %s | joiner: %s | result: success | batch_index: %d | joined_records: %d | eof: %t | source: buffered",
+		clientID, state.joiner.Name(), batchMessage.BatchIndex, len(joinedRecords), batchMessage.EOF)
+
+	// Cleanup when EOF received if the joiner requires it (e.g., large datasets like Q4 Users)
+	if batchMessage.EOF {
+		if state.joiner.ShouldCleanupAfterEOF() {
+			log.Printf("action: joiner_eof_received | client_id: %s | joiner: %s | result: cleaning_up",
+				clientID, state.joiner.Name())
+			h.cleanupClientState(clientID, state)
+		} else {
+			// Keep reference data to handle multiple EOF batches from different upstream nodes
+			// (e.g., 5 Q4 User Joiners all send batches with EOF to 1 Q4 Store Joiner)
+			log.Printf("action: joiner_eof_received | client_id: %s | joiner: %s | note: keeping_reference_data_for_multiple_eof_batches",
+				clientID, state.joiner.Name())
+		}
+	}
+
+	// No ACK here - batch was already ACK'ed when it was buffered
+	return nil
+}
+
 // processAggregatedData performs the actual join and publishes results
-func (h *JoinerHandler) processAggregatedData(state *JoinerClientState, batchMessage *protocol.BatchMessage,
-	_ *amqp091.Connection, _ *common.NodeWiring, msg amqp091.Delivery, clientID string) error {
+func (h *JoinerHandler) processAggregatedData(state *JoinerClientState, batchMessage *protocol.BatchMessage, msg amqp091.Delivery, clientID string) error {
 
 	log.Printf("action: join_aggregate_data | client_id: %s | joiner: %s | records: %d",
 		clientID, state.joiner.Name(), len(batchMessage.Records))
@@ -229,22 +293,24 @@ func (h *JoinerHandler) processAggregatedData(state *JoinerClientState, batchMes
 	log.Printf("action: joiner_publish | client_id: %s | joiner: %s | result: success | batch_index: %d | joined_records: %d | eof: %t",
 		clientID, state.joiner.Name(), batchMessage.BatchIndex, len(joinedRecords), batchMessage.EOF)
 
-	// Cleanup when EOF received - all joins for this client are complete
-	// Note: We don't cleanup immediately because multiple upstream nodes may send EOF
-	// (e.g., 5 Q4 User Joiners all send batches with EOF to 1 Q4 Store Joiner)
-	// The cleanup happens when the handler decides it's safe (timeout, memory pressure, etc.)
+	// Cleanup when EOF received if the joiner requires it (e.g., large datasets like Q4 Users)
 	if batchMessage.EOF {
-		// For now, we keep the reference data to handle multiple EOF batches from different upstream nodes
-		// Cleanup will happen when the node shuts down or on explicit cleanup command
-		log.Printf("action: joiner_eof_received | client_id: %s | joiner: %s | note: keeping_reference_data_for_multiple_eof_batches",
-			clientID, state.joiner.Name())
+		if state.joiner.ShouldCleanupAfterEOF() {
+			log.Printf("action: joiner_eof_received | client_id: %s | joiner: %s | result: cleaning_up",
+				clientID, state.joiner.Name())
+			h.cleanupClientState(clientID, state)
+		} else {
+			// Keep reference data to handle multiple EOF batches from different upstream nodes
+			// (e.g., 5 Q4 User Joiners all send batches with EOF to 1 Q4 Store Joiner)
+			log.Printf("action: joiner_eof_received | client_id: %s | joiner: %s | note: keeping_reference_data_for_multiple_eof_batches",
+				clientID, state.joiner.Name())
+		}
 	}
 
 	msg.Ack(false)
 	return nil
 } // handleAggregatedData processes aggregated data - buffers if reference data not ready, or joins immediately
-func (h *JoinerHandler) handleAggregatedData(state *JoinerClientState, batchMessage *protocol.BatchMessage,
-	connection *amqp091.Connection, wiring *common.NodeWiring, msg amqp091.Delivery, clientID string) error {
+func (h *JoinerHandler) handleAggregatedData(state *JoinerClientState, batchMessage *protocol.BatchMessage, msg amqp091.Delivery, clientID string) error {
 
 	// Check if reference data is complete for this client
 	state.mu.Lock()
@@ -252,25 +318,20 @@ func (h *JoinerHandler) handleAggregatedData(state *JoinerClientState, batchMess
 	state.mu.Unlock()
 
 	if !refDataComplete {
-		// Reference data not ready yet - buffer this aggregate batch
-		state.mu.Lock()
-		state.bufferedAggregateBatches = append(state.bufferedAggregateBatches, bufferedBatch{
-			batchMessage: batchMessage,
-			connection:   connection,
-			wiring:       wiring,
-			delivery:     msg,
-		})
-		bufferedCount := len(state.bufferedAggregateBatches)
-		state.mu.Unlock()
+		// Reference data not ready yet - buffer this aggregate batch in the joiner
+		state.joiner.AddBufferedBatch(*batchMessage)
+		bufferedCount := len(state.joiner.GetBufferedBatches())
 
 		log.Printf("action: buffer_aggregate_batch | client_id: %s | joiner: %s | batch_index: %d | buffered_count: %d | reason: reference_data_not_ready",
 			clientID, state.joiner.Name(), batchMessage.BatchIndex, bufferedCount)
 
-		// Don't ACK yet - will ACK when we process from buffer
+		// ACK the message - it's now safely buffered in memory and will be persisted
+		// when reference data EOF arrives
+		msg.Ack(false)
 		return nil
 	}
 
-	return h.processAggregatedData(state, batchMessage, connection, wiring, msg, clientID)
+	return h.processAggregatedData(state, batchMessage, msg, clientID)
 }
 
 // createOutputBatch creates the output batch with the correct dataset type
@@ -345,6 +406,7 @@ func (h *JoinerHandler) restoreClientState(clientID string, state *JoinerClientS
 				clientID, state.joiner.Name(), err)
 			return
 		}
+
 	}
 
 	if len(snapshot.Metadata) > 0 {
@@ -355,6 +417,10 @@ func (h *JoinerHandler) restoreClientState(clientID string, state *JoinerClientS
 			state.applyMetadata(meta)
 		}
 	}
+
+	bufferedCount := len(state.joiner.GetBufferedBatches())
+	log.Printf("action: joiner_restore_complete | client_id: %s | buffered_batches: %d",
+		clientID, bufferedCount)
 }
 
 func (h *JoinerHandler) deleteClientSnapshot(clientID string) {
@@ -369,22 +435,35 @@ func (h *JoinerHandler) deleteClientSnapshot(clientID string) {
 	}
 }
 
+// cleanupClientState removes a client's state from memory and disk after finalization
+// Calls the joiner's Cleanup() method to release resources, then removes the state
+func (h *JoinerHandler) cleanupClientState(clientID string, state *JoinerClientState) {
+	// Let the joiner clean up its own resources (maps, slices, file descriptors, etc.)
+	if err := state.joiner.Cleanup(); err != nil {
+		log.Printf("action: joiner_cleanup | client_id: %s | result: fail | error: %v", clientID, err)
+	}
+
+	// Delete persisted state files
+	h.deleteClientSnapshot(clientID)
+
+	// Remove the entire client state from the map
+	h.statesMu.Lock()
+	delete(h.states, clientID)
+	h.statesMu.Unlock()
+
+	log.Printf("action: joiner_cleanup_complete | client_id: %s", clientID)
+}
+
 func (s *JoinerClientState) metadataSnapshot() joinerSnapshotMetadata {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return joinerSnapshotMetadata{
-		Version:                  joinerSnapshotVersion,
 		ReferenceDatasetComplete: s.referenceDatasetComplete,
 	}
 }
 
 func (s *JoinerClientState) applyMetadata(meta joinerSnapshotMetadata) {
-	if meta.Version != joinerSnapshotVersion {
-		log.Printf("action: joiner_metadata_version_mismatch | expected: %d | got: %d",
-			joinerSnapshotVersion, meta.Version)
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

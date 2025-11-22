@@ -27,6 +27,15 @@ type Joiner interface {
 	// Cleanup releases resources held by this joiner instance
 	Cleanup() error
 
+	// ShouldCleanupAfterEOF indicates whether this joiner should cleanup state after processing EOF
+	// Returns true for joiners with large datasets (e.g., Q4 Users), false for small reference datasets
+	ShouldCleanupAfterEOF() bool
+
+	// Buffer management for aggregate batches that arrive before reference data is ready
+	AddBufferedBatch(batch protocol.BatchMessage)
+	GetBufferedBatches() []protocol.BatchMessage
+	ClearBufferedBatches()
+
 	// SerializeState exports the joiner state as a byte slice
 	// This is used to persist the state to disk
 	SerializeState() ([]byte, error)

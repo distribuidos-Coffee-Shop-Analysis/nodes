@@ -275,6 +275,8 @@ func (a *Q2Aggregate) SerializeState() ([]byte, error) {
 }
 
 // RestoreState restores Q2 aggregate state
+// Format: recordType|year_month|item_id|value
+// Note: productID is composite key "year_month|item_id" so we need to reconstruct it
 func (a *Q2Aggregate) RestoreState(data []byte) error {
 	if len(data) == 0 {
 		return nil
@@ -298,14 +300,18 @@ func (a *Q2Aggregate) RestoreState(data []byte) error {
 		}
 
 		parts := strings.Split(line, "|")
-		if len(parts) != 3 {
-			log.Printf("action: q2_restore_skip_invalid_line | line: %d | parts: %d", lineNum, len(parts))
+		if len(parts) != 4 {
+			log.Printf("action: q2_restore_skip_invalid_line | line: %d | parts: %d | expected: 4", lineNum, len(parts))
 			continue
 		}
 
 		recordType := parts[0]
-		productID := parts[1]
-		value := parts[2]
+		yearMonth := parts[1]
+		itemID := parts[2]
+		value := parts[3]
+
+		// Reconstruct composite key: "year_month|item_id"
+		productID := yearMonth + "|" + itemID
 
 		switch recordType {
 		case "Q":

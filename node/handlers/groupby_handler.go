@@ -27,6 +27,11 @@ func (h *GroupByHandler) Name() string {
 	return "groupby_" + h.groupby.Name()
 }
 
+// Shutdown for groupby handlers (no state to persist)
+func (h *GroupByHandler) Shutdown() error {
+	return nil
+}
+
 // StartHandler starts the groupby handler
 func (h *GroupByHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
 	// Create ONE publisher/channel for this handler and reuse it

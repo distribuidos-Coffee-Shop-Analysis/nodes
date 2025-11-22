@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
 	"sort"
 	"sync"
 	"sync/atomic"
-	"syscall"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
@@ -40,8 +38,7 @@ type AggregateHandler struct {
 	pub   *middleware.Publisher
 	pubMu sync.Mutex
 
-	stateStore        storage.StateStore
-	shutdownRequested atomic.Bool // Set to true when SIGTERM/SIGINT received
+	stateStore storage.StateStore
 }
 
 type aggregateSnapshotMetadata struct {
@@ -57,31 +54,7 @@ func NewAggregateHandler(newAggregate func() aggregates.Aggregate) *AggregateHan
 		states:       make(map[string]*AggregateClientState),
 	}
 
-	// Setup graceful shutdown handler
-	h.setupShutdownHandler()
-
 	return h
-}
-
-// setupShutdownHandler installs signal handlers for graceful shutdown
-func (h *AggregateHandler) setupShutdownHandler() {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
-
-	go func() {
-		sig := <-sigChan
-		log.Printf("action: aggregate_shutdown_signal_received | signal: %v | persisting_all_states: true", sig)
-
-		h.shutdownRequested.Store(true)
-
-		// Persist all active client states before shutdown
-		h.persistAllStates()
-
-		log.Printf("action: aggregate_shutdown_persist_complete | signal: %v", sig)
-
-		// Exit gracefully
-		os.Exit(0)
-	}()
 }
 
 func (h *AggregateHandler) Name() string {
@@ -414,8 +387,11 @@ func (h *AggregateHandler) deleteClientSnapshot(clientID string) {
 	}
 }
 
-// persistAllStates persists all active client states (called during graceful shutdown)
-func (h *AggregateHandler) persistAllStates() {
+// Shutdown persists all active client states during graceful shutdown
+// This is called by node.Shutdown() AFTER all in-flight messages have been processed
+func (h *AggregateHandler) Shutdown() error {
+	log.Printf("action: aggregate_shutdown | result: start | persisting_states: true")
+
 	h.statesMu.RLock()
 	clientIDs := make([]string, 0, len(h.states))
 	for clientID := range h.states {
@@ -433,6 +409,9 @@ func (h *AggregateHandler) persistAllStates() {
 			}
 		}
 	}
+
+	log.Printf("action: aggregate_shutdown | result: success | states_persisted: %d", len(clientIDs))
+	return nil
 }
 
 // trackBatchIndex tracks unique batch indices for a specific client state

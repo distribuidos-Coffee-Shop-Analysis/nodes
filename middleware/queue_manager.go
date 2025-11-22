@@ -153,6 +153,14 @@ func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessag
 			}
 		}
 
+		// Configure QoS (prefetch) to limit in-flight messages
+		// prefetchCount=100: RabbitMQ will send max 100 unacked messages to this consumer
+		// This prevents thousands of messages being "in flight" during shutdown
+		if err := dedicatedChannel.Qos(100, 0, false); err != nil {
+			log.Printf("action: set_qos | result: fail | queue: %s | error: %v", queueName, err)
+			return err
+		}
+
 		// Start consuming from this queue
 		msgs, err := dedicatedChannel.Consume(queueName, "", false, false, false, false, nil)
 		if err != nil {

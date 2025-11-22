@@ -43,6 +43,11 @@ func (h *FilterHandler) Name() string {
 	return "transaction_filter_" + h.filter.Name()
 }
 
+// Shutdown for filter handlers (no state to persist)
+func (h *FilterHandler) Shutdown() error {
+	return nil
+}
+
 // startFilterHandler starts the transaction filter handler
 func (h *FilterHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
 	// Create ONE publisher/channel for this handler and reuse it

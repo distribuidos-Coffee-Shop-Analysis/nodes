@@ -58,7 +58,7 @@ func (qm *QueueManager) Connect() error {
 	// exchanges
 	for _, ex := range qm.Wiring.DeclareExchs {
 		kind := "direct"
-		if err := qm.channel.ExchangeDeclare(ex, kind, false, false, false, false, nil); err != nil {
+		if err := qm.channel.ExchangeDeclare(ex, kind, true, false, false, false, nil); err != nil {
 			_ = qm.channel.Close()
 			_ = qm.Connection.Close()
 			return fmt.Errorf("declare exchange %s: %w", ex, err)
@@ -87,7 +87,7 @@ func (qm *QueueManager) Connect() error {
 		}
 
 		// Declare queue
-		q, err := qm.channel.QueueDeclare(queueName, false, false, false, false, nil)
+		q, err := qm.channel.QueueDeclare(queueName, true, false, false, false, nil)
 		if err != nil {
 			_ = qm.channel.Close()
 			_ = qm.Connection.Close()
@@ -154,9 +154,7 @@ func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessag
 		}
 
 		// Configure QoS (prefetch) to limit in-flight messages
-		// prefetchCount=100: RabbitMQ will send max 100 unacked messages to this consumer
-		// This prevents thousands of messages being "in flight" during shutdown
-		if err := dedicatedChannel.Qos(100, 0, false); err != nil {
+		if err := dedicatedChannel.Qos(12000, 0, false); err != nil {
 			log.Printf("action: set_qos | result: fail | queue: %s | error: %v", queueName, err)
 			return err
 		}

@@ -21,6 +21,10 @@ type JoinerClientState struct {
 	mu                       sync.Mutex
 	joiner                   joiners.Joiner
 	referenceDatasetComplete bool
+
+	// Batch tracking for ACK-after-persist strategy
+	referenceBatchesReceived   int                // Total reference batches received
+	pendingReferenceDeliveries []amqp091.Delivery // Deliveries waiting for persist + ACK
 }
 
 // JoinerHandler manages join operations for multiple clients
@@ -72,9 +76,14 @@ func (h *JoinerHandler) Shutdown() error {
 	for _, clientID := range clientIDs {
 		state := h.states[clientID]
 		if state != nil {
+			// Persist state
 			if err := h.persistClientState(clientID, state); err != nil {
 				log.Printf("action: joiner_shutdown_persist | client_id: %s | result: fail | error: %v", clientID, err)
+				// On error, NACK pending deliveries to requeue them
+				h.nackPendingDeliveries(state)
 			} else {
+				// On success, ACK all pending deliveries
+				h.ackPendingDeliveries(state, clientID)
 				log.Printf("action: joiner_shutdown_persist | client_id: %s | result: success", clientID)
 			}
 		}
@@ -105,8 +114,10 @@ func (h *JoinerHandler) getState(clientID string) *JoinerClientState {
 
 	// Create new state for this client
 	st := &JoinerClientState{
-		joiner:                   h.newJoiner(),
-		referenceDatasetComplete: false,
+		joiner:                     h.newJoiner(),
+		referenceDatasetComplete:   false,
+		referenceBatchesReceived:   0,
+		pendingReferenceDeliveries: make([]amqp091.Delivery, 0),
 	}
 	h.restoreClientState(clientID, st)
 	h.states[clientID] = st
@@ -170,6 +181,19 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 		return err
 	}
 
+	// Track this batch and add delivery to pending list (for ACK-after-persist)
+	state.mu.Lock()
+	state.referenceBatchesReceived++
+	state.pendingReferenceDeliveries = append(state.pendingReferenceDeliveries, msg)
+	pendingCount := len(state.pendingReferenceDeliveries)
+	batchesReceived := state.referenceBatchesReceived
+	state.mu.Unlock()
+
+	// Persistence strategy: persist + ACK when we reach batch limit
+	// CRITICAL: batchLimit MUST be < prefetch count (500) to avoid deadlock
+	const batchLimit = 5000
+	shouldPersist := pendingCount >= batchLimit
+
 	// Check if this is the last batch of reference data (EOF received)
 	if batchMessage.EOF {
 		state.mu.Lock()
@@ -180,21 +204,25 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 		bufferedBatches := state.joiner.GetBufferedBatches()
 		state.joiner.ClearBufferedBatches()
 
-		log.Printf("action: reference_data_complete | client_id: %s | joiner: %s | buffered_batches: %d",
-			clientID, state.joiner.Name(), len(bufferedBatches))
+		log.Printf("action: reference_data_complete | client_id: %s | joiner: %s | buffered_batches: %d | total_reference_batches: %d",
+			clientID, state.joiner.Name(), len(bufferedBatches), batchesReceived)
 
+		// Persist state
 		if err := h.persistClientState(clientID, state); err != nil {
 			log.Printf("action: joiner_persist_state | client_id: %s | joiner: %s | result: fail | error: %v",
 				clientID, state.joiner.Name(), err)
-			msg.Nack(false, true)
+			// NACK all pending deliveries
+			h.nackPendingDeliveries(state)
 			return err
 		}
+
+		// ACK all pending deliveries after successful persist
+		h.ackPendingDeliveries(state, clientID)
 
 		// Process any buffered aggregate batches that arrived before reference data was complete
 		if len(bufferedBatches) > 0 {
 			for i, buffered := range bufferedBatches {
 				// Process this buffered batch (perform join and publish)
-				// Don't pass msg delivery since these batches were already ACK'ed when buffered
 				err := h.processAggregatedDataWithoutAck(state, &buffered, clientID)
 				if err != nil {
 					log.Printf("action: process_buffered_batch | client_id: %s | joiner: %s | result: fail | batch_num: %d | error: %v",
@@ -204,9 +232,28 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 				}
 			}
 		}
+
+		return nil
 	}
 
-	msg.Ack(false)
+	// Periodic persistence: persist + ACK when we have 10000 pending batches
+	if shouldPersist {
+		if err := h.persistClientState(clientID, state); err != nil {
+			log.Printf("action: joiner_persist_periodic | client_id: %s | joiner: %s | result: fail | pending: %d | error: %v",
+				clientID, state.joiner.Name(), pendingCount, err)
+			// NACK all pending deliveries
+			h.nackPendingDeliveries(state)
+			return err
+		}
+
+		// ACK all pending deliveries after successful persist
+		h.ackPendingDeliveries(state, clientID)
+
+		log.Printf("action: joiner_persist_periodic | client_id: %s | joiner: %s | result: success | batches_acked: %d",
+			clientID, state.joiner.Name(), pendingCount)
+	}
+
+	// Don't ACK here - will ACK after persist (either periodic or EOF)
 	return nil
 }
 
@@ -433,6 +480,35 @@ func (h *JoinerHandler) deleteClientSnapshot(clientID string) {
 			log.Printf("action: joiner_state_delete | client_id: %s | result: fail | error: %v", clientID, err)
 		}
 	}
+}
+
+// ackPendingDeliveries acknowledges all pending reference deliveries after successful persist
+func (h *JoinerHandler) ackPendingDeliveries(state *JoinerClientState, clientID string) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	for _, delivery := range state.pendingReferenceDeliveries {
+		delivery.Ack(false)
+	}
+
+	ackCount := len(state.pendingReferenceDeliveries)
+	state.pendingReferenceDeliveries = make([]amqp091.Delivery, 0)
+
+	if ackCount > 0 {
+		log.Printf("action: joiner_ack_pending | client_id: %s | count: %d", clientID, ackCount)
+	}
+}
+
+// nackPendingDeliveries negatively acknowledges all pending deliveries (requeue on error)
+func (h *JoinerHandler) nackPendingDeliveries(state *JoinerClientState) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	for _, delivery := range state.pendingReferenceDeliveries {
+		delivery.Nack(false, true) // requeue=true
+	}
+
+	state.pendingReferenceDeliveries = make([]amqp091.Delivery, 0)
 }
 
 // cleanupClientState removes a client's state from memory and disk after finalization

@@ -33,6 +33,12 @@ type StateStore interface {
 	PersistBatchIndices(clientID string, indices []int) error
 	LoadBatchIndices(clientID string) ([]int, error)
 	DeleteBatchIndices(clientID string) error
+
+	// Incremental persistence (append-only for aggregates)
+	// Each persist creates a new incremental file: data_clientID_0.bin, data_clientID_1.bin, etc.
+	PersistIncremental(clientID string, data []byte) error
+	LoadAllIncrements(clientID string) ([][]byte, error)
+	DeleteAllIncrements(clientID string) error
 }
 
 // FileStateStore is a filesystem-backed implementation of StateStore.
@@ -40,9 +46,11 @@ type StateStore interface {
 //   - meta_<client>.bin (metadata)
 //   - data_<client>.bin (handler-defined payload)
 //   - batches_<client>.bin (seen batch indices, one per line)
+//   - data_<client>_0.bin, data_<client>_1.bin, ... (incremental snapshots)
 type FileStateStore struct {
-	roleDir string
-	locks   sync.Map // map[string]*clientLock
+	roleDir         string
+	locks           sync.Map // map[string]*clientLock
+	incrementalSeqs sync.Map // map[clientID]int - tracks next incremental sequence number
 }
 
 type clientLock struct {
@@ -302,4 +310,108 @@ func writeAtomically(targetPath string, data []byte) error {
 
 	success = true
 	return nil
+}
+
+// PersistIncremental appends data as a new incremental file
+// Creates files like: data_<clientID>_0.bin, data_<clientID>_1.bin, etc.
+func (s *FileStateStore) PersistIncremental(clientID string, data []byte) error {
+	if len(data) == 0 {
+		return nil // Nothing to persist
+	}
+
+	lock := s.getLock(clientID)
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+
+	// Get next sequence number
+	seq := s.getNextIncrementalSeq(clientID)
+
+	// Write incremental file
+	incrementalPath := s.incrementalPath(clientID, seq)
+	if err := writeAtomically(incrementalPath, data); err != nil {
+		return fmt.Errorf("persist incremental %d: %w", seq, err)
+	}
+
+	return nil
+}
+
+// LoadAllIncrements loads all incremental files for a client
+// Returns them in order: [data_0, data_1, data_2, ...]
+func (s *FileStateStore) LoadAllIncrements(clientID string) ([][]byte, error) {
+	lock := s.getLock(clientID)
+	lock.mu.RLock()
+	defer lock.mu.RUnlock()
+
+	var allData [][]byte
+	seq := 0
+
+	// Read incremental files in order until we find a gap
+	for {
+		incrementalPath := s.incrementalPath(clientID, seq)
+		data, err := os.ReadFile(incrementalPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// No more incremental files
+				break
+			}
+			return nil, fmt.Errorf("read incremental %d: %w", seq, err)
+		}
+
+		allData = append(allData, data)
+		seq++
+	}
+
+	if len(allData) == 0 {
+		return nil, ErrSnapshotNotFound
+	}
+
+	return allData, nil
+}
+
+// DeleteAllIncrements removes all incremental files for a client
+func (s *FileStateStore) DeleteAllIncrements(clientID string) error {
+	lock := s.getLock(clientID)
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+
+	seq := 0
+	deletedCount := 0
+
+	// Delete incremental files until we find a gap
+	for {
+		incrementalPath := s.incrementalPath(clientID, seq)
+		err := os.Remove(incrementalPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// No more incremental files
+				break
+			}
+			return fmt.Errorf("delete incremental %d: %w", seq, err)
+		}
+		deletedCount++
+		seq++
+	}
+
+	// Reset sequence counter
+	s.incrementalSeqs.Delete(clientID)
+
+	return nil
+}
+
+// incrementalPath returns the path for an incremental snapshot file
+func (s *FileStateStore) incrementalPath(clientID string, seq int) string {
+	filename := fmt.Sprintf("data_%s_%d.bin", clientID, seq)
+	return filepath.Join(s.roleDir, filename)
+}
+
+// getNextIncrementalSeq gets and increments the sequence number for a client
+func (s *FileStateStore) getNextIncrementalSeq(clientID string) int {
+	// Load current sequence or initialize to 0
+	seqVal, _ := s.incrementalSeqs.LoadOrStore(clientID, 0)
+	seq := seqVal.(int)
+
+	// Increment for next time
+	s.incrementalSeqs.Store(clientID, seq+1)
+
+	return seq
 }

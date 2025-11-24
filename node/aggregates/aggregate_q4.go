@@ -15,7 +15,10 @@ import (
 )
 
 type Q4AggregateState struct {
-	StoreUserCounts map[string]map[string]int
+	// Flat map with composite key: "storeID|userID" -> count
+	// Much more memory efficient than nested maps: map[store]map[user]count
+	// Avoids duplicate entries and reduces map overhead from O(stores * users) to O(unique pairs)
+	Counts map[string]int
 }
 
 // Q4Aggregate calculates the top 3 customers per store.
@@ -31,7 +34,7 @@ type Q4Aggregate struct {
 func NewQ4Aggregate() *Q4Aggregate {
 	return &Q4Aggregate{
 		state: &Q4AggregateState{
-			StoreUserCounts: make(map[string]map[string]int),
+			Counts: make(map[string]int, 100000), // Pre-allocate for expected pairs
 		},
 	}
 }
@@ -42,11 +45,12 @@ func (q *Q4Aggregate) Name() string {
 }
 
 // AccumulateBatch processes a batch of Q4GroupedRecord.
+// OPTIMIZATION: Uses flat map with composite key "storeID|userID" -> count
+// This consolidates duplicates during accumulation, preventing memory explosion
 func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int) error {
 
-	// Process records locally without lock, then we merge into shared map
-	// Structure: store_id -> user_id -> transaction_count
-	localStoreUserCounts := make(map[string]map[string]int)
+	// Build local map for this batch to minimize lock contention
+	localCounts := make(map[string]int, len(records))
 
 	for _, record := range records {
 		q4Grouped, ok := record.(*protocol.Q4GroupedRecord)
@@ -70,32 +74,22 @@ func (q *Q4Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 			continue // Skip invalid counts
 		}
 
-		// Initialize store map if needed (in local map)
-		if localStoreUserCounts[q4Grouped.StoreID] == nil {
-			localStoreUserCounts[q4Grouped.StoreID] = make(map[string]int)
-		}
-
-		// Accumulate transaction count in local map
-		localStoreUserCounts[q4Grouped.StoreID][q4Grouped.UserID] += transactionCount
+		// Create composite key: "storeID|userID"
+		key := q4Grouped.StoreID + "|" + q4Grouped.UserID
+		localCounts[key] += transactionCount
 	}
 
-	// Empty batches are valid - just skip the merge
-	if len(localStoreUserCounts) == 0 {
+	// Empty batches are valid - just skip
+	if len(localCounts) == 0 {
 		return nil
 	}
 
+	// Merge local map into global state with lock
 	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	for storeID, userCounts := range localStoreUserCounts {
-		if q.state.StoreUserCounts[storeID] == nil {
-			q.state.StoreUserCounts[storeID] = make(map[string]int)
-		}
-
-		for userID, count := range userCounts {
-			q.state.StoreUserCounts[storeID][userID] += count
-		}
+	for key, count := range localCounts {
+		q.state.Counts[key] += count
 	}
+	q.mu.Unlock()
 
 	return nil
 }
@@ -106,12 +100,34 @@ func (q *Q4Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
 		q.clientID = clientID
 	}
 
-	log.Printf("action: q4_finalize_start | client_id: %s | stores: %d", clientID, len(q.state.StoreUserCounts))
+	log.Printf("action: q4_finalize_start | client_id: %s | unique_pairs: %d", clientID, len(q.state.Counts))
+
+	// Group by store: parse composite keys "storeID|userID"
+	storeUserCounts := make(map[string]map[string]int)
+
+	for compositeKey, count := range q.state.Counts {
+		// Parse composite key: "storeID|userID"
+		parts := strings.SplitN(compositeKey, "|", 2)
+		if len(parts) != 2 {
+			log.Printf("action: q4_invalid_composite_key | key: %s", compositeKey)
+			continue
+		}
+
+		storeID := parts[0]
+		userID := parts[1]
+
+		if storeUserCounts[storeID] == nil {
+			storeUserCounts[storeID] = make(map[string]int)
+		}
+		storeUserCounts[storeID][userID] = count
+	}
+
+	log.Printf("action: q4_grouping_complete | client_id: %s | stores: %d", clientID, len(storeUserCounts))
 
 	var results []protocol.Record
 
 	// For each store, get top 3 customers
-	for storeId, userCounts := range q.state.StoreUserCounts {
+	for storeId, userCounts := range storeUserCounts {
 		// Create slice of customers for this store
 		type Customer struct {
 			UserId           string
@@ -159,9 +175,31 @@ func (q *Q4Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
 	return results, nil
 }
 
-// GetBatchesToPublish returns batches partitioned by user_id for distributed join
+// GetBatchesToPublish performs full finalization with append-only buffer merge
 // Implements the RecordAggregate interface
-func (q *Q4Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]BatchToPublish, error) {
+// historicalIncrements: All persisted incremental snapshots (loaded from disk during finalize)
+func (q *Q4Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIndex int, clientID string) ([]BatchToPublish, error) {
+
+	// APPEND-ONLY BUFFER STRATEGY:
+	// Merge all historical increments (data that was persisted and cleared from memory)
+	// Then combine with current in-memory buffer to get complete dataset
+	if len(historicalIncrements) > 0 {
+		log.Printf("action: q4_merge_start | client_id: %s | increments: %d",
+			clientID, len(historicalIncrements))
+
+		for i, incrementData := range historicalIncrements {
+			if len(incrementData) > 0 {
+				if err := q.RestoreState(incrementData); err != nil {
+					log.Printf("action: q4_merge_increment | client_id: %s | increment: %d | result: fail | error: %v",
+						clientID, i, err)
+					// Continue with other increments
+				}
+			}
+		}
+
+		log.Printf("action: q4_merge_complete | client_id: %s | increments_merged: %d | total_unique_pairs: %d",
+			clientID, len(historicalIncrements), len(q.state.Counts))
+	}
 
 	cfg := common.GetConfig()
 	joinersCount := cfg.GetQ4JoinersCount()
@@ -212,39 +250,57 @@ func (q *Q4Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]Ba
 	return batchesToPublish, nil
 }
 
+// ClearBuffer clears the in-memory buffer after successful persistence
+// This frees memory while keeping historical data on disk
+func (a *Q4Aggregate) ClearBuffer() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Clear the counts map to free memory
+	a.state.Counts = make(map[string]int)
+
+	return nil
+}
+
 // Cleanup releases all resources held by this aggregate
 func (a *Q4Aggregate) Cleanup() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.state.StoreUserCounts = nil
+	a.state.Counts = nil
 	a.state = nil
 
 	return nil
 }
 
-// Format: store_id|user_id|count\n for each entry
+// Format: composite_key|count\n where composite_key is "storeID|userID"
+// Example: "store1|user123|42\n"
+// ATOMIC SNAPSHOT: Takes snapshot of current data, clears buffer, then serializes
 func (a *Q4Aggregate) SerializeState() ([]byte, error) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
+	// CRITICAL: Use WRITE lock and clear buffer atomically with snapshot
+	a.mu.Lock()
 
-	totalEntries := 0
-	for _, userCounts := range a.state.StoreUserCounts {
-		totalEntries += len(userCounts)
+	// Make snapshot copy of current map
+	snapshotCounts := make(map[string]int, len(a.state.Counts))
+	for k, v := range a.state.Counts {
+		snapshotCounts[k] = v
 	}
 
-	var buf bytes.Buffer
-	buf.Grow(totalEntries * 50) // Pre-allocate
+	// ATOMICALLY clear the buffer (new data can now accumulate during serialization)
+	a.state.Counts = make(map[string]int, 100000)
 
-	for storeID, userCounts := range a.state.StoreUserCounts {
-		for userID, count := range userCounts {
-			buf.WriteString(storeID)
-			buf.WriteByte('|')
-			buf.WriteString(userID)
-			buf.WriteByte('|')
-			buf.WriteString(strconv.Itoa(count))
-			buf.WriteByte('\n')
-		}
+	a.mu.Unlock()
+
+	// Serialize the snapshot WITHOUT holding the lock (can take time)
+	var buf bytes.Buffer
+	buf.Grow(len(snapshotCounts) * 50) // Pre-allocate
+
+	for compositeKey, count := range snapshotCounts {
+		// compositeKey is already "storeID|userID", just append count
+		buf.WriteString(compositeKey)
+		buf.WriteByte('|')
+		buf.WriteString(strconv.Itoa(count))
+		buf.WriteByte('\n')
 	}
 
 	return buf.Bytes(), nil
@@ -258,10 +314,14 @@ func (a *Q4Aggregate) RestoreState(data []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.state.StoreUserCounts = make(map[string]map[string]int)
+	// Initialize map if not already created
+	if a.state.Counts == nil {
+		a.state.Counts = make(map[string]int, 100000)
+	}
 
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	lineNum := 0
+	restoredCount := 0
 
 	for scanner.Scan() {
 		lineNum++
@@ -271,6 +331,7 @@ func (a *Q4Aggregate) RestoreState(data []byte) error {
 			continue
 		}
 
+		// Format: "storeID|userID|count"
 		parts := strings.Split(line, "|")
 		if len(parts) != 3 {
 			log.Printf("action: q4_restore_skip_invalid_line | line: %d | parts: %d", lineNum, len(parts))
@@ -286,19 +347,18 @@ func (a *Q4Aggregate) RestoreState(data []byte) error {
 			continue
 		}
 
-		if a.state.StoreUserCounts[storeID] == nil {
-			a.state.StoreUserCounts[storeID] = make(map[string]int)
-		}
+		// Reconstruct composite key
+		compositeKey := storeID + "|" + userID
 
-		a.state.StoreUserCounts[storeID][userID] = count
+		// MERGE: Add to existing count (supports append-only persistence)
+		// If key doesn't exist, it starts at 0
+		a.state.Counts[compositeKey] += count
+		restoredCount++
 	}
 
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("scan q4 aggregate snapshot: %w", err)
 	}
-
-	log.Printf("action: q4_restore_complete | entries_restored: %d | stores: %d",
-		lineNum, len(a.state.StoreUserCounts))
 
 	return nil
 }

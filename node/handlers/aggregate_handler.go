@@ -27,6 +27,13 @@ type AggregateClientState struct {
 	expectedTotalBatches int
 	seenBatchIndices     map[int]bool
 	uniqueBatchCount     atomic.Int32
+
+	// Batch tracking for ACK-after-persist strategy
+	batchesSinceLastPersist int                // Batches accumulated since last persist
+	pendingDeliveries       []amqp091.Delivery // Deliveries waiting for persist + ACK
+
+	// Persist synchronization (prevents multiple concurrent persists)
+	isPersisting atomic.Bool // Flag to ensure only one goroutine persists at a time
 }
 
 // AggregateHandler manages aggregate operations for multiple clients
@@ -87,10 +94,12 @@ func (h *AggregateHandler) getState(clientID string) *AggregateClientState {
 
 	// Create new state for this client
 	st := &AggregateClientState{
-		aggregate:            h.newAggregate(),
-		oneTimeFinalize:      true,
-		seenBatchIndices:     make(map[int]bool),
-		expectedTotalBatches: 0,
+		aggregate:               h.newAggregate(),
+		oneTimeFinalize:         true,
+		seenBatchIndices:        make(map[int]bool),
+		expectedTotalBatches:    0,
+		batchesSinceLastPersist: 0,
+		pendingDeliveries:       make([]amqp091.Delivery, 0),
 	}
 	h.restoreClientState(clientID, st)
 	h.states[clientID] = st
@@ -129,6 +138,54 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	clientID := batchMessage.ClientID
 	state := h.getState(clientID)
 
+	// Check if this batch was already processed (duplicate detection for recovery)
+	state.mu.Lock()
+	alreadySeen := state.seenBatchIndices[batchMessage.BatchIndex]
+	state.mu.Unlock()
+
+	if alreadySeen {
+		// This batch was already processed before a crash/restart
+		// ACK it to prevent requeue, but don't process again
+		log.Printf("action: aggregate_duplicate_batch | client_id: %s | aggregate: %s | batch_index: %d | "+
+			"result: skipped | reason: already_processed",
+			clientID, state.aggregate.Name(), batchMessage.BatchIndex)
+
+		// However, if this duplicate batch has EOF flag, we still need to register it
+		// This handles the case where EOF arrived but wasn't persisted before crash
+		if batchMessage.EOF {
+			state.mu.Lock()
+			expectedTotalBatches := batchMessage.BatchIndex + 1
+			if expectedTotalBatches > state.expectedTotalBatches {
+				state.expectedTotalBatches = expectedTotalBatches
+			}
+			state.eofReceived = true
+
+			// Check if we should finalize (all batches already received before crash)
+			if state.oneTimeFinalize && state.expectedTotalBatches > 0 {
+				allBatchesReceived := state.hasAllBatchesUpTo(state.expectedTotalBatches - 1)
+				if allBatchesReceived {
+					state.oneTimeFinalize = false
+					state.mu.Unlock()
+
+					log.Printf("action: aggregate_eof_received_duplicate | client_id: %s | aggregate: %s | "+
+						"max_batch_index: %d | expected_total: %d | ready_to_finalize: true",
+						clientID, state.aggregate.Name(), batchMessage.BatchIndex, expectedTotalBatches)
+
+					// Finalize immediately (no new data to persist)
+					return h.finalizeClient(clientID, state, batchMessage)
+				}
+			}
+			state.mu.Unlock()
+
+			log.Printf("action: aggregate_eof_received_duplicate | client_id: %s | aggregate: %s | "+
+				"max_batch_index: %d | expected_total: %d",
+				clientID, state.aggregate.Name(), batchMessage.BatchIndex, expectedTotalBatches)
+		}
+
+		msg.Ack(false)
+		return nil
+	}
+
 	// Accumulate this batch for this specific client
 	err := state.aggregate.AccumulateBatch(batchMessage.Records, batchMessage.BatchIndex)
 	if err != nil {
@@ -142,7 +199,13 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	// This ensures we don't count batches that failed to process
 	state.trackBatchIndex(batchMessage.BatchIndex)
 
+	// Track this batch and add delivery to pending list (for ACK-after-persist)
 	state.mu.Lock()
+	state.batchesSinceLastPersist++
+	state.pendingDeliveries = append(state.pendingDeliveries, msg)
+	batchesSinceLastPersist := state.batchesSinceLastPersist
+	pendingCount := len(state.pendingDeliveries)
+
 	// Check if this batch has EOF flag
 	if batchMessage.EOF {
 		// Store the maximum batch index - this tells us the expected range is [0, maxBatchIndex]
@@ -166,67 +229,111 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 		allBatchesReceived := state.hasAllBatchesUpTo(state.expectedTotalBatches - 1)
 		if allBatchesReceived {
 			shouldFinalize = true
+			state.oneTimeFinalize = false // Ensure finalize runs only once
+			log.Printf("action: aggregate_ready_to_finalize | client_id: %s | aggregate: %s | batch_index: %d | "+
+				"total_batches: %d | has_eof_flag: %t",
+				clientID, state.aggregate.Name(), batchMessage.BatchIndex,
+				state.expectedTotalBatches, batchMessage.EOF)
+		} else {
+			missing := state.countMissingBatches(state.expectedTotalBatches - 1)
+			log.Printf("action: aggregate_waiting_for_batches | client_id: %s | aggregate: %s | batch_index: %d | "+
+				"missing_batches: %d | received: %d | expected: %d",
+				clientID, state.aggregate.Name(), batchMessage.BatchIndex,
+				missing, state.getUniqueBatchCount(), state.expectedTotalBatches)
 		}
 		// Note: We silently wait for missing batches to arrive from prefetch buffer
 	}
 
-	// Check if we should finalize
-	if shouldFinalize {
-		state.oneTimeFinalize = false // Ensure finalize runs only once
-	}
-
-	// Persistence strategy: ONLY persist on EOF (when client finishes)
-	// - During normal operation: zero I/O, everything in memory
-	// - On EOF: persist once before finalization (includes batch indices)
-	// - On SIGTERM/SIGINT: graceful shutdown persists all active states
-	shouldPersist := batchMessage.EOF || shouldFinalize
-
 	state.mu.Unlock()
 
-	// Persist state only when client finishes (EOF received)
-	if shouldPersist {
-		// Persist with batch indices for complete recovery snapshot
-		if err := h.persistClientStateWithBatches(clientID, state); err != nil {
-			log.Printf("action: aggregate_persist_state | client_id: %s | aggregate: %s | result: fail | error: %v",
-				clientID, state.aggregate.Name(), err)
-			msg.Nack(false, true)
-			return err
-		}
+	// Persistence strategy: persist + ACK periodically OR on EOF/finalize
+	// - Persist every BATCH_PERSIST_LIMIT batches (e.g., 3000)
+	// - On crash: RabbitMQ requeues unACKed messages, we restore from last persist
+	const batchPersistLimit = 3000
+	shouldPersist := batchesSinceLastPersist >= batchPersistLimit || batchMessage.EOF || shouldFinalize
 
-		log.Printf("action: aggregate_persist_state | client_id: %s | aggregate: %s | result: success | reason: eof",
-			clientID, state.aggregate.Name())
+	if shouldFinalize && !shouldPersist {
+		shouldPersist = true
+	}
+
+	// Persist state and ACK pending deliveries
+	// IMPORTANT: Persistence happens OUTSIDE the lock to avoid blocking other goroutines
+	// Use atomic flag to ensure only ONE goroutine persists at a time (prevents race condition)
+	// EXCEPT for finalize - we skip persist and use in-memory buffer directly
+	if shouldPersist && !shouldFinalize {
+		// NORMAL PERSIST: Try to acquire lock, skip if busy
+		if state.isPersisting.CompareAndSwap(false, true) {
+			defer state.isPersisting.Store(false)
+
+			// Persist with batch indices
+			// NOTE: SerializeState now does snapshot+clear atomically, so no separate ClearBuffer needed
+			if err := h.persistClientStateWithBatches(clientID, state); err != nil {
+				log.Printf("action: aggregate_persist_state | client_id: %s | aggregate: %s | result: fail | pending: %d | error: %v",
+					clientID, state.aggregate.Name(), pendingCount, err)
+				h.nackPendingDeliveries(state)
+				return err
+			}
+
+			// ACK all pending deliveries
+			h.ackPendingDeliveries(state, clientID)
+		} else {
+			// Skip - another persist in progress
+			// These batches will remain in memory and be included in next persist or finalize
+		}
 	}
 
 	if shouldFinalize {
-		log.Printf("action: aggregate_finalize | client_id: %s | aggregate: %s | result: start | "+
-			"total_batches_processed: %d | expected_batches: %d | all_batches_received: true",
-			clientID, state.aggregate.Name(), state.getUniqueBatchCount(), state.expectedTotalBatches)
-
-		batchesToPublish, err := state.aggregate.GetBatchesToPublish(batchMessage.BatchIndex, clientID)
-		if err != nil {
-			log.Printf("action: get_batches_to_publish | client_id: %s | aggregate: %s | result: fail | error: %v",
-				clientID, state.aggregate.Name(), err)
-			msg.Nack(false, true)
-			return err
-		}
-
-		h.pubMu.Lock()
-		err = h.publishBatches(h.pub, batchesToPublish)
-		h.pubMu.Unlock()
-
-		if err != nil {
-			log.Printf("action: aggregate_publish | client_id: %s | aggregate: %s | result: fail | error: %v",
-				clientID, state.aggregate.Name(), err)
-			msg.Nack(false, true)
-			return err
-		}
-
-		h.cleanupClientState(clientID, state)
+		return h.finalizeClient(clientID, state, batchMessage)
 	}
 
-	// Acknowledge the message
-	msg.Ack(false)
+	return nil
+}
 
+// finalizeClient performs the complete finalization process for a client
+func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClientState, batchMessage *protocol.BatchMessage) error {
+	log.Printf("action: aggregate_finalize | client_id: %s | aggregate: %s | result: start | "+
+		"total_batches_processed: %d | expected_batches: %d | all_batches_received: true",
+		clientID, state.aggregate.Name(), state.getUniqueBatchCount(), state.expectedTotalBatches)
+
+	// APPEND-ONLY FINALIZE: Load ALL incremental snapshots from disk
+	// Memory only contains the current buffer - historical data is on disk
+	var allIncrements [][]byte
+	if h.stateStore != nil {
+		var err error
+		allIncrements, err = h.stateStore.LoadAllIncrements(clientID)
+		if err != nil && !errors.Is(err, storage.ErrSnapshotNotFound) {
+			log.Printf("action: aggregate_load_increments | client_id: %s | aggregate: %s | result: fail | error: %v",
+				clientID, state.aggregate.Name(), err)
+			// Continue with empty increments - we have current buffer in memory
+			allIncrements = nil
+		} else if len(allIncrements) > 0 {
+			log.Printf("action: aggregate_load_increments | client_id: %s | aggregate: %s | "+
+				"increments: %d | result: success",
+				clientID, state.aggregate.Name(), len(allIncrements))
+		}
+	}
+
+	// Delegate finalization to the aggregate (merge all increments + current buffer)
+	batchesToPublish, err := state.aggregate.GetBatchesToPublish(allIncrements, batchMessage.BatchIndex, clientID)
+	if err != nil {
+		log.Printf("action: aggregate_finalize | client_id: %s | aggregate: %s | result: fail | error: %v",
+			clientID, state.aggregate.Name(), err)
+		return err
+	}
+
+	h.pubMu.Lock()
+	err = h.publishBatches(h.pub, batchesToPublish)
+	h.pubMu.Unlock()
+
+	if err != nil {
+		log.Printf("action: aggregate_publish | client_id: %s | aggregate: %s | result: fail | error: %v",
+			clientID, state.aggregate.Name(), err)
+		return err
+	}
+
+	h.ackPendingDeliveries(state, clientID)
+
+	h.cleanupClientState(clientID, state)
 	return nil
 }
 
@@ -240,9 +347,9 @@ func (h *AggregateHandler) cleanupClientState(clientID string, state *AggregateC
 
 	h.deleteClientSnapshot(clientID)
 
-	// Clear metadata
 	state.mu.Lock()
 	state.seenBatchIndices = nil
+	state.pendingDeliveries = nil
 	state.mu.Unlock()
 
 	// Remove the entire client state from the map
@@ -293,22 +400,38 @@ func (h *AggregateHandler) persistClientState(clientID string, state *AggregateC
 		return nil
 	}
 
+	// APPEND-ONLY PERSISTENCE:
+	// Instead of rewriting the entire state file, we append incremental snapshots
+	// This makes persist operations fast and allows recovery to merge all increments
+
+	// Serialize current in-memory state (only what's accumulated since last persist)
 	data, err := state.aggregate.SerializeState()
 	if err != nil {
 		return fmt.Errorf("serialize aggregate state: %w", err)
 	}
 
+	// Persist metadata (always overwrites - small file)
 	meta := state.metadataSnapshot()
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {
 		return fmt.Errorf("encode aggregate metadata: %w", err)
 	}
 
-	// Persist main snapshot (metadata + data)
-	return h.stateStore.Persist(clientID, &storage.Snapshot{
+	if err := h.stateStore.Persist(clientID, &storage.Snapshot{
 		Metadata: metaBytes,
-		Data:     data,
-	})
+		Data:     nil, // We don't use the main data file anymore
+	}); err != nil {
+		return fmt.Errorf("persist metadata: %w", err)
+	}
+
+	// Persist data as incremental snapshot (appends new file)
+	if len(data) > 0 {
+		if err := h.stateStore.PersistIncremental(clientID, data); err != nil {
+			return fmt.Errorf("persist incremental data: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // persistClientStateWithBatches persists state AND batch indices (only called on EOF)
@@ -340,23 +463,25 @@ func (h *AggregateHandler) restoreClientState(clientID string, state *AggregateC
 		return
 	}
 
-	if len(snapshot.Data) > 0 {
-		if err := state.aggregate.RestoreState(snapshot.Data); err != nil {
-			log.Printf("action: aggregate_restore_state | client_id: %s | aggregate: %s | result: fail | error: %v",
-				clientID, state.aggregate.Name(), err)
-			return
-		}
-	}
+	// APPEND-ONLY BUFFER STRATEGY:
+	// We only restore metadata and batch indices during startup
+	// Data (incremental snapshots) is NEVER loaded into memory until Finalize()
+	// Memory is used ONLY as a temporary buffer between persist operations
 
+	// Load metadata (control flow: EOF status, expected batches)
 	if len(snapshot.Metadata) > 0 {
 		var meta aggregateSnapshotMetadata
 		if err := json.Unmarshal(snapshot.Metadata, &meta); err != nil {
 			log.Printf("action: aggregate_restore_metadata | client_id: %s | result: fail | error: %v", clientID, err)
 		} else {
 			state.applyMetadata(meta)
+			log.Printf("action: aggregate_restore_metadata | client_id: %s | result: success | "+
+				"eof_received: %t | expected_batches: %d",
+				clientID, meta.EOFReceived, meta.ExpectedTotalBatches)
 		}
 	}
 
+	// Load batch indices (needed to detect duplicates and skip already-processed batches)
 	batchIndices, err := h.stateStore.LoadBatchIndices(clientID)
 	if err != nil {
 		if !errors.Is(err, storage.ErrSnapshotNotFound) {
@@ -367,6 +492,10 @@ func (h *AggregateHandler) restoreClientState(clientID string, state *AggregateC
 		log.Printf("action: aggregate_restore_batch_indices | client_id: %s | result: success | count: %d",
 			clientID, len(batchIndices))
 	}
+
+	log.Printf("action: aggregate_restore_complete | client_id: %s | aggregate: %s | "+
+		"metadata: loaded | batch_indices: %d | data: deferred_to_finalize",
+		clientID, state.aggregate.Name(), len(batchIndices))
 }
 
 func (h *AggregateHandler) deleteClientSnapshot(clientID string) {
@@ -374,17 +503,52 @@ func (h *AggregateHandler) deleteClientSnapshot(clientID string) {
 		return
 	}
 
+	// Delete main metadata file
 	if err := h.stateStore.Delete(clientID); err != nil {
 		if !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: aggregate_state_delete | client_id: %s | result: fail | error: %v", clientID, err)
 		}
 	}
 
+	// Delete batch indices file
 	if err := h.stateStore.DeleteBatchIndices(clientID); err != nil {
 		if !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: aggregate_batch_indices_delete | client_id: %s | result: fail | error: %v", clientID, err)
 		}
 	}
+
+	// Delete ALL incremental snapshot files (append-only cleanup)
+	if err := h.stateStore.DeleteAllIncrements(clientID); err != nil {
+		log.Printf("action: aggregate_increments_delete | client_id: %s | result: fail | error: %v", clientID, err)
+	} else {
+		log.Printf("action: aggregate_increments_delete | client_id: %s | result: success", clientID)
+	}
+}
+
+// ackPendingDeliveries acknowledges all pending deliveries after successful persist
+func (h *AggregateHandler) ackPendingDeliveries(state *AggregateClientState, clientID string) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	for _, delivery := range state.pendingDeliveries {
+		delivery.Ack(false)
+	}
+
+	state.pendingDeliveries = make([]amqp091.Delivery, 0)
+	state.batchesSinceLastPersist = 0
+}
+
+// nackPendingDeliveries negatively acknowledges all pending deliveries (requeue on error)
+func (h *AggregateHandler) nackPendingDeliveries(state *AggregateClientState) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	for _, delivery := range state.pendingDeliveries {
+		delivery.Nack(false, true) // requeue=true
+	}
+
+	state.pendingDeliveries = make([]amqp091.Delivery, 0)
+	state.batchesSinceLastPersist = 0
 }
 
 // Shutdown persists all active client states during graceful shutdown
@@ -402,9 +566,14 @@ func (h *AggregateHandler) Shutdown() error {
 	for _, clientID := range clientIDs {
 		state := h.states[clientID]
 		if state != nil {
+			// Persist state
 			if err := h.persistClientStateWithBatches(clientID, state); err != nil {
 				log.Printf("action: aggregate_shutdown_persist | client_id: %s | result: fail | error: %v", clientID, err)
+				// On error, NACK pending deliveries to requeue them
+				h.nackPendingDeliveries(state)
 			} else {
+				// On success, ACK all pending deliveries
+				h.ackPendingDeliveries(state, clientID)
 				log.Printf("action: aggregate_shutdown_persist | client_id: %s | result: success", clientID)
 			}
 		}

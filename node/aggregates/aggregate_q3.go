@@ -12,8 +12,15 @@ import (
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
+// Q3RawRecord stores raw data before aggregation
+type Q3RawRecord struct {
+	YearHalf string
+	StoreID  string
+	TPV      float64
+}
+
 type Q3AggregateState struct {
-	TPVData map[string]float64 // year_half|store_id -> accumulated tpv
+	RawRecords []Q3RawRecord // Store raw records, aggregate only on Finalize
 }
 
 // Q3Aggregate handles aggregation of Q3 grouped data to accumulate TPV by year_half and store
@@ -27,7 +34,7 @@ type Q3Aggregate struct {
 func NewQ3Aggregate() *Q3Aggregate {
 	return &Q3Aggregate{
 		state: &Q3AggregateState{
-			TPVData: make(map[string]float64),
+			RawRecords: make([]Q3RawRecord, 0),
 		},
 	}
 }
@@ -36,11 +43,12 @@ func (a *Q3Aggregate) Name() string {
 	return "q3_aggregate_tpv_by_year_half_store"
 }
 
-// AccumulateBatch processes and accumulates a batch of Q3 grouped records
+// AccumulateBatch stores raw records WITHOUT aggregation
+// Aggregation happens only in Finalize() to ensure correctness
 func (a *Q3Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int) error {
 
-	// Process records locally without lock (no shared state access)
-	localTPV := make(map[string]float64)
+	// Process records locally without lock
+	localRawRecords := make([]Q3RawRecord, 0, len(records))
 
 	for _, record := range records {
 		q3GroupedRecord, ok := record.(*protocol.Q3GroupedRecord)
@@ -67,37 +75,48 @@ func (a *Q3Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int)
 			continue
 		}
 
-		// Create aggregate key: year_half|store_id
-		key := fmt.Sprintf("%s|%s", q3GroupedRecord.YearHalf, q3GroupedRecord.StoreID)
-
-		// Accumulate TPV in local map
-		localTPV[key] += tpv
+		// STORE RAW - NO AGGREGATION YET
+		localRawRecords = append(localRawRecords, Q3RawRecord{
+			YearHalf: q3GroupedRecord.YearHalf,
+			StoreID:  q3GroupedRecord.StoreID,
+			TPV:      tpv,
+		})
 	}
 
-	// Only lock for the final merge into shared state (critical section)
+	// Only lock for the final append into shared state
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	for key, tpv := range localTPV {
-		a.state.TPVData[key] += tpv
-	}
+	a.state.RawRecords = append(a.state.RawRecords, localRawRecords...)
 
 	return nil
 }
 
-// Finalize generates the final aggregated TPV records by year_half and store
+// Finalize aggregates ALL raw records and generates final TPV by year_half and store
 func (a *Q3Aggregate) Finalize(clientId string) ([]protocol.Record, error) {
 
 	if a.clientID == "" {
 		a.clientID = clientId
 	}
 
-	log.Printf("action: q3_aggregate_finalize | client_id: %s | tpv_entries: %d", clientId, len(a.state.TPVData))
+	log.Printf("action: q3_aggregate_finalize_start | client_id: %s | raw_records: %d",
+		clientId, len(a.state.RawRecords))
+
+	// NOW we aggregate: sum TPV by (year_half, store_id)
+	tpvData := make(map[string]float64)
+
+	for _, rawRecord := range a.state.RawRecords {
+		key := fmt.Sprintf("%s|%s", rawRecord.YearHalf, rawRecord.StoreID)
+		tpvData[key] += rawRecord.TPV
+	}
+
+	log.Printf("action: q3_aggregate_finalize_aggregated | client_id: %s | unique_keys: %d",
+		clientId, len(tpvData))
 
 	var result []protocol.Record
 
-	// Convert accumulated data to Q3AggregatedRecord
-	for key, tpv := range a.state.TPVData {
+	// Convert aggregated data to Q3AggregatedRecord
+	for key, tpv := range tpvData {
 		parts := parseAggregateKey(key)
 		yearHalf, storeID := parts[0], parts[1]
 
@@ -120,7 +139,29 @@ func (a *Q3Aggregate) Finalize(clientId string) ([]protocol.Record, error) {
 
 // GetBatchesToPublish returns a single batch with all aggregated results
 // Q3 doesn't need partitioning, so returns a single batch with empty routing key (uses default from config)
-func (a *Q3Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]BatchToPublish, error) {
+func (a *Q3Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIndex int, clientID string) ([]BatchToPublish, error) {
+
+	// APPEND-ONLY BUFFER STRATEGY:
+	// Merge all historical increments (data that was persisted and cleared from memory)
+	// Then combine with current in-memory buffer to get complete dataset
+	if len(historicalIncrements) > 0 {
+		log.Printf("action: q3_merge_start | client_id: %s | increments: %d",
+			clientID, len(historicalIncrements))
+
+		for i, incrementData := range historicalIncrements {
+			if len(incrementData) > 0 {
+				if err := a.RestoreState(incrementData); err != nil {
+					log.Printf("action: q3_merge_increment | client_id: %s | increment: %d | result: fail | error: %v",
+						clientID, i, err)
+					// Continue with other increments
+				}
+			}
+		}
+
+		log.Printf("action: q3_merge_complete | client_id: %s | increments_merged: %d | raw_records: %d",
+			clientID, len(historicalIncrements), len(a.state.RawRecords))
+	}
+
 	results, err := a.Finalize(clientID)
 	if err != nil {
 		return nil, err
@@ -136,12 +177,26 @@ func (a *Q3Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]Ba
 	}, nil
 }
 
+// ClearBuffer clears the in-memory raw records buffer after successful persistence
+// This frees memory while keeping historical data on disk
+// NOTE: With atomic snapshot in SerializeState, this is now a no-op (already cleared)
+func (a *Q3Aggregate) ClearBuffer() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Clear already done in SerializeState atomically with snapshot
+	// This is kept for interface compatibility
+	a.state.RawRecords = make([]Q3RawRecord, 0)
+
+	return nil
+}
+
 // Cleanup releases all resources held by this aggregate
 func (a *Q3Aggregate) Cleanup() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.state.TPVData = nil
+	a.state.RawRecords = nil
 	a.state = nil
 
 	return nil
@@ -152,17 +207,37 @@ type q3AggregateSnapshot struct {
 }
 
 // Format: key|tpv\n
+// ATOMIC SNAPSHOT: This method takes a snapshot of current data, clears the buffer, then serializes
+// This prevents race condition where data arrives between serialize and clear
 func (a *Q3Aggregate) SerializeState() ([]byte, error) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
+	// CRITICAL: Use WRITE lock and clear buffer atomically with snapshot
+	a.mu.Lock()
 
+	recordCount := len(a.state.RawRecords)
+	log.Printf("action: q3_serialize_state | raw_records_count: %d", recordCount)
+
+	// Make a snapshot copy of current buffer
+	snapshot := make([]Q3RawRecord, recordCount)
+	copy(snapshot, a.state.RawRecords)
+
+	// ATOMICALLY clear the buffer (new data can now accumulate during serialization)
+	a.state.RawRecords = make([]Q3RawRecord, 0)
+	log.Printf("action: q3_serialize_clear | cleared: %d | new_buffer_ready", recordCount)
+
+	a.mu.Unlock()
+
+	// Serialize the snapshot WITHOUT holding the lock (can take time)
 	var buf bytes.Buffer
-	buf.Grow(len(a.state.TPVData) * 50)
+	buf.Grow(recordCount * 50)
 
-	for key, tpv := range a.state.TPVData {
-		buf.WriteString(key)
+	// Serialize raw records (no aggregation)
+	// Format: year_half|store_id|tpv
+	for _, rawRecord := range snapshot {
+		buf.WriteString(rawRecord.YearHalf)
 		buf.WriteByte('|')
-		buf.WriteString(strconv.FormatFloat(tpv, 'f', 2, 64))
+		buf.WriteString(rawRecord.StoreID)
+		buf.WriteByte('|')
+		buf.WriteString(strconv.FormatFloat(rawRecord.TPV, 'f', 2, 64))
 		buf.WriteByte('\n')
 	}
 
@@ -180,10 +255,14 @@ func (a *Q3Aggregate) RestoreState(data []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.state.TPVData = make(map[string]float64)
+	// Initialize slice if not already created
+	if a.state.RawRecords == nil {
+		a.state.RawRecords = make([]Q3RawRecord, 0)
+	}
 
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	lineNum := 0
+	restoredCount := 0
 
 	for scanner.Scan() {
 		lineNum++
@@ -203,24 +282,25 @@ func (a *Q3Aggregate) RestoreState(data []byte) error {
 		storeID := parts[1]
 		tpvValue := parts[2]
 
-		// Reconstruct composite key: "year_half|store_id"
-		key := yearHalf + "|" + storeID
-
 		tpv, err := strconv.ParseFloat(tpvValue, 64)
 		if err != nil {
 			log.Printf("action: q3_restore_skip_invalid_tpv | line: %d | value: %s | error: %v",
-				lineNum, parts[1], err)
+				lineNum, tpvValue, err)
 			continue
 		}
 
-		a.state.TPVData[key] = tpv
+		// APPEND raw record (no aggregation)
+		a.state.RawRecords = append(a.state.RawRecords, Q3RawRecord{
+			YearHalf: yearHalf,
+			StoreID:  storeID,
+			TPV:      tpv,
+		})
+		restoredCount++
 	}
 
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("scan q3 aggregate snapshot: %w", err)
 	}
-
-	log.Printf("action: q3_restore_complete | tpv_entries: %d", len(a.state.TPVData))
 
 	return nil
 }

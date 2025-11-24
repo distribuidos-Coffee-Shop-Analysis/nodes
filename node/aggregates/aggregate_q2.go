@@ -212,7 +212,29 @@ func findMostProfitableItem(items map[string]float64) (string, float64) {
 
 // GetBatchesToPublish returns a single batch with all aggregated results
 // Q2 doesn't need partitioning, so returns a single batch with empty routing key (uses default from config)
-func (a *Q2Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]BatchToPublish, error) {
+func (a *Q2Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIndex int, clientID string) ([]BatchToPublish, error) {
+
+	// APPEND-ONLY BUFFER STRATEGY:
+	// Merge all historical increments (data that was persisted and cleared from memory)
+	// Then combine with current in-memory buffer to get complete dataset
+	if len(historicalIncrements) > 0 {
+		log.Printf("action: q2_merge_start | client_id: %s | increments: %d",
+			clientID, len(historicalIncrements))
+
+		for i, incrementData := range historicalIncrements {
+			if len(incrementData) > 0 {
+				if err := a.RestoreState(incrementData); err != nil {
+					log.Printf("action: q2_merge_increment | client_id: %s | increment: %d | result: fail | error: %v",
+						clientID, i, err)
+					// Continue with other increments
+				}
+			}
+		}
+
+		log.Printf("action: q2_merge_complete | client_id: %s | increments_merged: %d | quantity_entries: %d | profit_entries: %d",
+			clientID, len(historicalIncrements), len(a.state.QuantityData), len(a.state.ProfitData))
+	}
+
 	results, err := a.Finalize(clientID)
 	if err != nil {
 		return nil, err
@@ -226,6 +248,19 @@ func (a *Q2Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]Ba
 			RoutingKey: "",
 		},
 	}, nil
+}
+
+// ClearBuffer clears the in-memory buffer after successful persistence
+// This frees memory while keeping historical data on disk
+func (a *Q2Aggregate) ClearBuffer() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Clear the maps to free memory
+	a.state.QuantityData = make(map[string]int)
+	a.state.ProfitData = make(map[string]float64)
+
+	return nil
 }
 
 // Cleanup releases all resources held by this aggregate
@@ -245,15 +280,34 @@ func (a *Q2Aggregate) Cleanup() error {
 //
 //	Q|product_id|quantity\n for quantity data
 //	P|product_id|profit\n for profit data
+//
+// ATOMIC SNAPSHOT: Takes snapshot of current data, clears buffer, then serializes
 func (a *Q2Aggregate) SerializeState() ([]byte, error) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
+	// CRITICAL: Use WRITE lock and clear buffer atomically with snapshot
+	a.mu.Lock()
 
+	// Make snapshot copies of current maps
+	snapshotQuantity := make(map[string]int, len(a.state.QuantityData))
+	for k, v := range a.state.QuantityData {
+		snapshotQuantity[k] = v
+	}
+
+	snapshotProfit := make(map[string]float64, len(a.state.ProfitData))
+	for k, v := range a.state.ProfitData {
+		snapshotProfit[k] = v
+	}
+
+	// ATOMICALLY clear the buffers (new data can now accumulate during serialization)
+	a.state.QuantityData = make(map[string]int)
+	a.state.ProfitData = make(map[string]float64)
+
+	a.mu.Unlock()
+
+	// Serialize the snapshots WITHOUT holding the lock (can take time)
 	var buf bytes.Buffer
-	// Pre-allocate
-	buf.Grow(len(a.state.QuantityData)*2*50 + len(a.state.ProfitData)*2*50)
+	buf.Grow(len(snapshotQuantity)*2*50 + len(snapshotProfit)*2*50)
 
-	for productID, quantity := range a.state.QuantityData {
+	for productID, quantity := range snapshotQuantity {
 		buf.WriteByte('Q')
 		buf.WriteByte('|')
 		buf.WriteString(productID)
@@ -262,7 +316,7 @@ func (a *Q2Aggregate) SerializeState() ([]byte, error) {
 		buf.WriteByte('\n')
 	}
 
-	for productID, profit := range a.state.ProfitData {
+	for productID, profit := range snapshotProfit {
 		buf.WriteByte('P')
 		buf.WriteByte('|')
 		buf.WriteString(productID)
@@ -285,11 +339,17 @@ func (a *Q2Aggregate) RestoreState(data []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.state.QuantityData = make(map[string]int)
-	a.state.ProfitData = make(map[string]float64)
+	// Initialize maps if not already created
+	if a.state.QuantityData == nil {
+		a.state.QuantityData = make(map[string]int)
+	}
+	if a.state.ProfitData == nil {
+		a.state.ProfitData = make(map[string]float64)
+	}
 
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	lineNum := 0
+	restoredCount := 0
 
 	for scanner.Scan() {
 		lineNum++
@@ -321,7 +381,9 @@ func (a *Q2Aggregate) RestoreState(data []byte) error {
 					lineNum, value, err)
 				continue
 			}
-			a.state.QuantityData[productID] = quantity
+			// MERGE: Add to existing quantity (supports append-only persistence)
+			a.state.QuantityData[productID] += quantity
+			restoredCount++
 
 		case "P":
 			profit, err := strconv.ParseFloat(value, 64)
@@ -330,7 +392,9 @@ func (a *Q2Aggregate) RestoreState(data []byte) error {
 					lineNum, value, err)
 				continue
 			}
-			a.state.ProfitData[productID] = profit
+			// MERGE: Add to existing profit (supports append-only persistence)
+			a.state.ProfitData[productID] += profit
+			restoredCount++
 
 		default:
 			log.Printf("action: q2_restore_skip_unknown_type | line: %d | type: %s", lineNum, recordType)
@@ -340,9 +404,6 @@ func (a *Q2Aggregate) RestoreState(data []byte) error {
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("scan q2 aggregate snapshot: %w", err)
 	}
-
-	log.Printf("action: q2_restore_complete | quantity_entries: %d | profit_entries: %d",
-		len(a.state.QuantityData), len(a.state.ProfitData))
 
 	return nil
 }

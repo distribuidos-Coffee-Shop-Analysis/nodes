@@ -30,7 +30,7 @@ docker-compose-up:
 .PHONY: docker-compose-up
 
 docker-compose-down:
-	docker compose down
+	docker compose down -v
 .PHONY: docker-compose-down
 
 docker-compose-logs:

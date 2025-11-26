@@ -9,6 +9,10 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+const PREFETCH_COUNT = 30
+
+const HEARTBEAT_SECONDS = 3
+
 // QueueManager manages RabbitMQ connections and queue operations for the filter node
 type QueueManager struct {
 	host       string
@@ -39,9 +43,8 @@ func NewQueueManagerWithWiring(w *common.NodeWiring) *QueueManager {
 func (qm *QueueManager) Connect() error {
 	var err error
 
-	// Create connection string
-	connStr := fmt.Sprintf("amqp://%s:%s@%s:%d/",
-		qm.username, qm.password, qm.host, qm.port)
+	connStr := fmt.Sprintf("amqp://%s:%s@%s:%d/?heartbeat=%d",
+		qm.username, qm.password, qm.host, qm.port, HEARTBEAT_SECONDS)
 
 	qm.Connection, err = amqp.Dial(connStr)
 	if err != nil {
@@ -154,7 +157,7 @@ func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessag
 		}
 
 		// Configure QoS (prefetch) to limit in-flight messages
-		if err := dedicatedChannel.Qos(12000, 0, false); err != nil {
+		if err := dedicatedChannel.Qos(PREFETCH_COUNT, 0, false); err != nil {
 			log.Printf("action: set_qos | result: fail | queue: %s | error: %v", queueName, err)
 			return err
 		}

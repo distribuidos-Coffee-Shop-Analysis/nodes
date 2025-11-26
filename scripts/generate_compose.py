@@ -84,7 +84,7 @@ def generate_compose(output_file, type_counts):
 
             if needs_persistence(role):
                 state_dir = get_state_volume(role)
-                volumes.append(f"./state/{state_dir}:/app/state")
+                volumes.append(f"./state/{state_dir}/node_{i}:/app/state")
 
             service = {
                 "container_name": svc_name,

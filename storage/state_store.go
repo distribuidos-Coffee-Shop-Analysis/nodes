@@ -31,6 +31,7 @@ type StateStore interface {
 
 	// Batch indices persistence (for aggregates with millions of batches)
 	PersistBatchIndices(clientID string, indices []int) error
+	AppendBatchIndex(clientID string, batchIndex int) error // Atomic append of single index
 	LoadBatchIndices(clientID string) ([]int, error)
 	DeleteBatchIndices(clientID string) error
 
@@ -39,6 +40,12 @@ type StateStore interface {
 	PersistIncremental(clientID string, data []byte) error
 	LoadAllIncrements(clientID string) ([][]byte, error)
 	DeleteAllIncrements(clientID string) error
+
+	// Buffered batches persistence (for joiners)
+	// Stores buffered aggregated batches separately from reference data
+	PersistBufferedBatches(clientID string, data []byte) error
+	LoadBufferedBatches(clientID string) ([]byte, error)
+	DeleteBufferedBatches(clientID string) error
 }
 
 // FileStateStore is a filesystem-backed implementation of StateStore.
@@ -243,6 +250,31 @@ func (s *FileStateStore) DeleteBatchIndices(clientID string) error {
 	return nil
 }
 
+// AppendBatchIndex atomically appends a single batch index to the file
+// This is much faster than rewriting all indices for high-frequency updates
+func (s *FileStateStore) AppendBatchIndex(clientID string, batchIndex int) error {
+	lock := s.getLock(clientID)
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+
+	f, err := os.OpenFile(s.batchesPath(clientID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open batch indices file: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := fmt.Fprintf(f, "%d\n", batchIndex); err != nil {
+		return fmt.Errorf("append batch index: %w", err)
+	}
+
+	// Sync to ensure durability before ACK
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("sync batch indices file: %w", err)
+	}
+
+	return nil
+}
+
 // cleanupOrphanedTempFiles removes leftover temporary files from previous crashes
 func (s *FileStateStore) cleanupOrphanedTempFiles() error {
 	entries, err := os.ReadDir(s.roleDir)
@@ -414,4 +446,70 @@ func (s *FileStateStore) getNextIncrementalSeq(clientID string) int {
 	s.incrementalSeqs.Store(clientID, seq+1)
 
 	return seq
+}
+
+// PersistBufferedBatches persists buffered aggregated batches (for joiners)
+// This file is separate from reference data increments and is overwritten on each persist
+func (s *FileStateStore) PersistBufferedBatches(clientID string, data []byte) error {
+	if len(data) == 0 {
+		return nil // Nothing to persist
+	}
+
+	lock := s.getLock(clientID)
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+
+	finalPath := s.bufferedBatchesPath(clientID)
+	tempPath := finalPath + ".tmp"
+
+	// Write to temp file
+	if err := os.WriteFile(tempPath, data, 0o644); err != nil {
+		return fmt.Errorf("write buffered batches temp file: %w", err)
+	}
+
+	// Atomic rename
+	if err := os.Rename(tempPath, finalPath); err != nil {
+		os.Remove(tempPath) // Cleanup temp file on error
+		return fmt.Errorf("rename buffered batches file: %w", err)
+	}
+
+	return nil
+}
+
+// LoadBufferedBatches loads buffered aggregated batches for a client
+func (s *FileStateStore) LoadBufferedBatches(clientID string) ([]byte, error) {
+	lock := s.getLock(clientID)
+	lock.mu.RLock()
+	defer lock.mu.RUnlock()
+
+	filePath := s.bufferedBatchesPath(clientID)
+	data, err := os.ReadFile(filePath)
+	if os.IsNotExist(err) {
+		return nil, ErrSnapshotNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read buffered batches file: %w", err)
+	}
+
+	return data, nil
+}
+
+// DeleteBufferedBatches deletes the buffered batches file for a client
+func (s *FileStateStore) DeleteBufferedBatches(clientID string) error {
+	lock := s.getLock(clientID)
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+
+	filePath := s.bufferedBatchesPath(clientID)
+	err := os.Remove(filePath)
+	if os.IsNotExist(err) {
+		return nil // Already deleted
+	}
+	return err
+}
+
+// bufferedBatchesPath returns the path for buffered batches file
+func (s *FileStateStore) bufferedBatchesPath(clientID string) string {
+	filename := fmt.Sprintf("data_buffered_%s.bin", clientID)
+	return filepath.Join(s.roleDir, filename)
 }

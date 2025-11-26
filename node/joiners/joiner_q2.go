@@ -7,74 +7,280 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
-type Q2JoinerState struct {
-	MenuItems          map[string]*protocol.MenuItemRecord // key: item_id, value: menu item record
-	BufferedAggBatches []protocol.BatchMessage             // Buffered aggregate batches waiting for reference data
-}
-
 // Q2Joiner handles joining Q2 aggregate data with menu item names
+// State is only used during PerformJoin to merge all reference increments
 type Q2Joiner struct {
-	state    *Q2JoinerState
-	mu       sync.RWMutex
-	clientID string
+	rawReferenceRecords []*protocol.MenuItemRecord
+	clientID            string
 }
 
 // NewQ2Joiner creates a new Q2Joiner instance
 func NewQ2Joiner() *Q2Joiner {
 	return &Q2Joiner{
-		state: &Q2JoinerState{
-			MenuItems:          make(map[string]*protocol.MenuItemRecord),
-			BufferedAggBatches: make([]protocol.BatchMessage, 0),
-		},
+		rawReferenceRecords: make([]*protocol.MenuItemRecord, 0),
 	}
 }
 
-// Name returns the name of this joiner
 func (j *Q2Joiner) Name() string {
 	return "q2_joiner_menu_items"
 }
 
-// StoreReferenceDataset stores menu item reference data for future joins
-func (j *Q2Joiner) StoreReferenceDataset(records []protocol.Record) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
+// SerializeReferenceRecords directly serializes reference records without intermediate buffer
+// Format: R|item_id|item_name|category|price|is_seasonal|available_from|available_to\n
+func (j *Q2Joiner) SerializeReferenceRecords(records []protocol.Record) ([]byte, error) {
+	if len(records) == 0 {
+		return nil, nil
+	}
+
+	var buf bytes.Buffer
+	buf.Grow(len(records) * 100)
 
 	for _, record := range records {
 		menuItem, ok := record.(*protocol.MenuItemRecord)
 		if !ok {
-			return fmt.Errorf("expected MenuItemRecord, got %T", record)
+			log.Printf("action: q2_joiner_serialize_skip | expected: MenuItemRecord | got: %T", record)
+			continue
 		}
 
-		j.state.MenuItems[menuItem.ItemID] = menuItem
+		buf.WriteString("R|")
+		buf.WriteString(menuItem.ItemID)
+		buf.WriteByte('|')
+		buf.WriteString(menuItem.ItemName)
+		buf.WriteByte('|')
+		buf.WriteString(menuItem.Category)
+		buf.WriteByte('|')
+		buf.WriteString(menuItem.Price)
+		buf.WriteByte('|')
+		buf.WriteString(menuItem.IsSeasonal)
+		buf.WriteByte('|')
+		buf.WriteString(menuItem.AvailableFrom)
+		buf.WriteByte('|')
+		buf.WriteString(menuItem.AvailableTo)
+		buf.WriteByte('\n')
 	}
 
-	return nil
+	return buf.Bytes(), nil
 }
 
-// PerformJoin joins Q2 aggregated data with stored menu items
-func (j *Q2Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId string) ([]protocol.Record, error) {
+// SerializeBufferedBatch directly serializes a buffered batch without intermediate buffer
+// Format: B|batch_index|eof|client_id|record_type|fields...\n
+func (j *Q2Joiner) SerializeBufferedBatch(batch *protocol.BatchMessage) ([]byte, error) {
+	if batch == nil || len(batch.Records) == 0 {
+		return nil, nil
+	}
+
+	var buf bytes.Buffer
+	buf.Grow(len(batch.Records) * 100)
+
+	for _, record := range batch.Records {
+		buf.WriteString("B|")
+		buf.WriteString(strconv.Itoa(batch.BatchIndex))
+		buf.WriteByte('|')
+		buf.WriteString(strconv.FormatBool(batch.EOF))
+		buf.WriteByte('|')
+		buf.WriteString(batch.ClientID)
+		buf.WriteByte('|')
+
+		switch r := record.(type) {
+		case *protocol.Q2BestSellingRecord:
+			buf.WriteString("Q2BestSelling|")
+			buf.WriteString(r.YearMonth)
+			buf.WriteByte('|')
+			buf.WriteString(r.ItemID)
+			buf.WriteByte('|')
+			buf.WriteString(r.SellingsQty)
+
+		case *protocol.Q2MostProfitsRecord:
+			buf.WriteString("Q2MostProfits|")
+			buf.WriteString(r.YearMonth)
+			buf.WriteByte('|')
+			buf.WriteString(r.ItemID)
+			buf.WriteByte('|')
+			buf.WriteString(r.ProfitSum)
+
+		default:
+			log.Printf("action: q2_joiner_serialize_buffered_skip | type: %T", record)
+			continue
+		}
+		buf.WriteByte('\n')
+	}
+
+	return buf.Bytes(), nil
+}
+
+// RestoreBufferedBatches restores buffered batches from disk (returns them for processing)
+func (j *Q2Joiner) RestoreBufferedBatches(data []byte) ([]protocol.BatchMessage, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	batchRecords := make(map[int][]protocol.Record)
+	batchMetadata := make(map[int]*protocol.BatchMessage)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) == 0 || !strings.HasPrefix(line, "B|") {
+			continue
+		}
+
+		parts := strings.Split(line[2:], "|")
+		if len(parts) < 5 {
+			continue
+		}
+
+		batchIndex, err := strconv.Atoi(parts[0])
+		if err != nil {
+			continue
+		}
+
+		eof, _ := strconv.ParseBool(parts[1])
+		clientID := parts[2]
+		recordType := parts[3]
+
+		if _, exists := batchMetadata[batchIndex]; !exists {
+			batchMetadata[batchIndex] = &protocol.BatchMessage{
+				Type:       protocol.MessageTypeBatch,
+				BatchIndex: batchIndex,
+				EOF:        eof,
+				ClientID:   clientID,
+			}
+		}
+
+		var record protocol.Record
+		switch recordType {
+		case "Q2BestSelling":
+			if len(parts) != 7 {
+				continue
+			}
+			record = &protocol.Q2BestSellingRecord{
+				YearMonth:   parts[4],
+				ItemID:      parts[5],
+				SellingsQty: parts[6],
+			}
+
+		case "Q2MostProfits":
+			if len(parts) != 7 {
+				continue
+			}
+			record = &protocol.Q2MostProfitsRecord{
+				YearMonth: parts[4],
+				ItemID:    parts[5],
+				ProfitSum: parts[6],
+			}
+
+		default:
+			continue
+		}
+
+		batchRecords[batchIndex] = append(batchRecords[batchIndex], record)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan q2 joiner buffered batches: %w", err)
+	}
+
+	var batches []protocol.BatchMessage
+	for batchIndex, records := range batchRecords {
+		meta := batchMetadata[batchIndex]
+		batches = append(batches, protocol.BatchMessage{
+			Type:        meta.Type,
+			DatasetType: protocol.DatasetTypeQ2Agg,
+			BatchIndex:  batchIndex,
+			EOF:         meta.EOF,
+			ClientID:    meta.ClientID,
+			Records:     records,
+		})
+	}
+
+	log.Printf("action: q2_joiner_restore_buffered_complete | buffered_batches: %d", len(batches))
+
+	return batches, nil
+}
+
+// restoreState restores reference data from a serialized increment (used during join)
+func (j *Q2Joiner) restoreState(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	if j.rawReferenceRecords == nil {
+		j.rawReferenceRecords = make([]*protocol.MenuItemRecord, 0)
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) == 0 || !strings.HasPrefix(line, "R|") {
+			continue
+		}
+
+		parts := strings.Split(line[2:], "|")
+		if len(parts) != 7 {
+			continue
+		}
+
+		menuItem := &protocol.MenuItemRecord{
+			ItemID:        parts[0],
+			ItemName:      parts[1],
+			Category:      parts[2],
+			Price:         parts[3],
+			IsSeasonal:    parts[4],
+			AvailableFrom: parts[5],
+			AvailableTo:   parts[6],
+		}
+		j.rawReferenceRecords = append(j.rawReferenceRecords, menuItem)
+	}
+
+	return scanner.Err()
+}
+
+func (j *Q2Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId string, historicalIncrements [][]byte) ([]protocol.Record, error) {
 	if j.clientID == "" {
 		j.clientID = clientId
 	}
 
-	j.mu.RLock()
-	defer j.mu.RUnlock()
+	// Load all reference data increments
+	if len(historicalIncrements) > 0 {
+		log.Printf("action: q2_joiner_load_start | client_id: %s | increments: %d",
+			clientId, len(historicalIncrements))
+
+		for i, incrementData := range historicalIncrements {
+			if len(incrementData) > 0 {
+				if err := j.restoreState(incrementData); err != nil {
+					log.Printf("action: q2_joiner_load_increment | client_id: %s | increment: %d | result: fail | error: %v",
+						clientId, i, err)
+				}
+			}
+		}
+
+		log.Printf("action: q2_joiner_load_complete | client_id: %s | increments_merged: %d | raw_records: %d",
+			clientId, len(historicalIncrements), len(j.rawReferenceRecords))
+	}
+
+	// Build index
+	menuItemIndex := make(map[string]*protocol.MenuItemRecord, len(j.rawReferenceRecords))
+	for _, menuItem := range j.rawReferenceRecords {
+		menuItemIndex[menuItem.ItemID] = menuItem
+	}
+
+	log.Printf("action: q2_joiner_index_built | client_id: %s | menu_items: %d",
+		clientId, len(menuItemIndex))
 
 	var joinedRecords []protocol.Record
 
 	for _, record := range aggregatedRecords {
 		switch aggRecord := record.(type) {
 		case *protocol.Q2BestSellingRecord:
-			// Join best selling data with menu item names
-			menuItem, exists := j.state.MenuItems[aggRecord.ItemID]
+			menuItem, exists := menuItemIndex[aggRecord.ItemID]
 			if !exists {
 				log.Printf("action: q2_join_warning | client_id: %s | item_id: %s | error: menu_item_not_found", clientId, aggRecord.ItemID)
-				continue // Skip records without matching menu items
+				continue
 			}
 
 			joinedRecord := &protocol.Q2BestSellingWithNameRecord{
@@ -84,15 +290,11 @@ func (j *Q2Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId str
 			}
 			joinedRecords = append(joinedRecords, joinedRecord)
 
-			log.Printf("action: q2_join_best_selling | client_id: %s | item_id: %s | item_name: %s | qty: %s",
-				clientId, aggRecord.ItemID, menuItem.ItemName, aggRecord.SellingsQty)
-
 		case *protocol.Q2MostProfitsRecord:
-			// Join most profitable data with menu item names
-			menuItem, exists := j.state.MenuItems[aggRecord.ItemID]
+			menuItem, exists := menuItemIndex[aggRecord.ItemID]
 			if !exists {
 				log.Printf("action: q2_join_warning | client_id: %s | item_id: %s | error: menu_item_not_found", clientId, aggRecord.ItemID)
-				continue // Skip records without matching menu items
+				continue
 			}
 
 			joinedRecord := &protocol.Q2MostProfitsWithNameRecord{
@@ -102,272 +304,34 @@ func (j *Q2Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId str
 			}
 			joinedRecords = append(joinedRecords, joinedRecord)
 
-			log.Printf("action: q2_join_most_profits | client_id: %s | item_id: %s | item_name: %s | profit: %s",
-				clientId, aggRecord.ItemID, menuItem.ItemName, aggRecord.ProfitSum)
-
 		default:
 			return nil, fmt.Errorf("unsupported Q2 aggregated record type: %T", record)
 		}
 	}
 
+	log.Printf("action: q2_joiner_join_complete | client_id: %s | input_records: %d | joined_records: %d",
+		clientId, len(aggregatedRecords), len(joinedRecords))
+
 	return joinedRecords, nil
 }
 
-// GetOutputDatasetType returns the dataset type for Q2 joined output
 func (j *Q2Joiner) GetOutputDatasetType() protocol.DatasetType {
 	return protocol.DatasetTypeQ2AggWithName
 }
 
-// AcceptsReferenceType checks if this joiner accepts menu items as reference data
 func (j *Q2Joiner) AcceptsReferenceType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeMenuItems
 }
 
-// AcceptsAggregateType checks if this joiner accepts Q2 aggregate data
 func (j *Q2Joiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ2Agg
 }
 
-// Cleanup releases resources
-// Note: We keep reference data because multiple EOF batches may arrive from upstream
-// Menu items dataset is small (~100 rows, ~10KB) so keeping it in memory is fine
 func (j *Q2Joiner) Cleanup() error {
-	// No-op: we keep reference data to handle multiple EOF batches
+	j.rawReferenceRecords = nil
 	return nil
 }
 
 func (j *Q2Joiner) ShouldCleanupAfterEOF() bool {
-	// Q2 has small reference data (menu items), keep in memory
 	return false
-}
-
-// AddBufferedBatch adds a batch to the buffer (thread-safe)
-func (j *Q2Joiner) AddBufferedBatch(batch protocol.BatchMessage) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	j.state.BufferedAggBatches = append(j.state.BufferedAggBatches, batch)
-}
-
-// GetBufferedBatches returns all buffered batches (thread-safe, returns a copy)
-func (j *Q2Joiner) GetBufferedBatches() []protocol.BatchMessage {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-	// Return a copy to avoid race conditions
-	batches := make([]protocol.BatchMessage, len(j.state.BufferedAggBatches))
-	copy(batches, j.state.BufferedAggBatches)
-	return batches
-}
-
-// ClearBufferedBatches clears all buffered batches (thread-safe)
-func (j *Q2Joiner) ClearBufferedBatches() {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	j.state.BufferedAggBatches = make([]protocol.BatchMessage, 0)
-}
-
-// SerializeState exports the current joiner state using pipe-delimited format
-// Format:
-//
-//	Reference data: R|item_id|item_name|category|price|is_seasonal|available_from|available_to\n
-//	Separator: ---BUFFERED---\n
-//	Buffered batches: B|batch_index|eof|client_id|record_type|record_data...\n
-func (j *Q2Joiner) SerializeState() ([]byte, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-
-	var buf bytes.Buffer
-	buf.Grow(len(j.state.MenuItems)*100 + len(j.state.BufferedAggBatches)*200)
-
-	// 1. Serialize reference data (menu items)
-	for itemID, item := range j.state.MenuItems {
-		buf.WriteString("R|")
-		buf.WriteString(itemID)
-		buf.WriteByte('|')
-		buf.WriteString(item.ItemName)
-		buf.WriteByte('|')
-		buf.WriteString(item.Category)
-		buf.WriteByte('|')
-		buf.WriteString(item.Price)
-		buf.WriteByte('|')
-		buf.WriteString(item.IsSeasonal)
-		buf.WriteByte('|')
-		buf.WriteString(item.AvailableFrom)
-		buf.WriteByte('|')
-		buf.WriteString(item.AvailableTo)
-		buf.WriteByte('\n')
-	}
-
-	// 2. Separator
-	if len(j.state.BufferedAggBatches) > 0 {
-		buf.WriteString("---BUFFERED---\n")
-
-		// 3. Serialize buffered aggregate batches
-		for _, batch := range j.state.BufferedAggBatches {
-			for _, record := range batch.Records {
-				buf.WriteString("B|")
-				buf.WriteString(strconv.Itoa(batch.BatchIndex))
-				buf.WriteByte('|')
-				buf.WriteString(strconv.FormatBool(batch.EOF))
-				buf.WriteByte('|')
-				buf.WriteString(batch.ClientID)
-				buf.WriteByte('|')
-
-				// Serialize specific record type
-				switch r := record.(type) {
-				case *protocol.Q2BestSellingRecord:
-					buf.WriteString("Q2BestSelling|")
-					buf.WriteString(r.YearMonth)
-					buf.WriteByte('|')
-					buf.WriteString(r.ItemID)
-					buf.WriteByte('|')
-					buf.WriteString(r.SellingsQty)
-
-				case *protocol.Q2MostProfitsRecord:
-					buf.WriteString("Q2MostProfits|")
-					buf.WriteString(r.YearMonth)
-					buf.WriteByte('|')
-					buf.WriteString(r.ItemID)
-					buf.WriteByte('|')
-					buf.WriteString(r.ProfitSum)
-
-				default:
-					log.Printf("action: q2_joiner_serialize_skip_unknown_record | type: %T", record)
-					continue
-				}
-				buf.WriteByte('\n')
-			}
-		}
-	}
-
-	return buf.Bytes(), nil
-}
-
-// RestoreState restores the joiner state from pipe-delimited format
-func (j *Q2Joiner) RestoreState(data []byte) error {
-	if len(data) == 0 {
-		return nil
-	}
-
-	j.mu.Lock()
-	defer j.mu.Unlock()
-
-	j.state.MenuItems = make(map[string]*protocol.MenuItemRecord)
-	j.state.BufferedAggBatches = make([]protocol.BatchMessage, 0)
-
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	lineNum := 0
-	inBufferedSection := false
-	currentBatch := (*protocol.BatchMessage)(nil)
-	batchRecords := make(map[int][]protocol.Record) // Group records by batch index
-
-	for scanner.Scan() {
-		lineNum++
-		line := scanner.Text()
-
-		if len(line) == 0 {
-			continue
-		}
-
-		// Check for separator
-		if line == "---BUFFERED---" {
-			inBufferedSection = true
-			continue
-		}
-
-		parts := strings.Split(line, "|")
-		if len(parts) < 2 {
-			log.Printf("action: q2_joiner_restore_skip_invalid_line | line: %d | parts: %d", lineNum, len(parts))
-			continue
-		}
-
-		prefix := parts[0]
-
-		if !inBufferedSection && prefix == "R" {
-			// Reference data: R|item_id|item_name|category|price|is_seasonal|available_from|available_to
-			if len(parts) != 8 {
-				log.Printf("action: q2_joiner_restore_skip_invalid_reference | line: %d | parts: %d", lineNum, len(parts))
-				continue
-			}
-
-			menuItem := &protocol.MenuItemRecord{
-				ItemID:        parts[1],
-				ItemName:      parts[2],
-				Category:      parts[3],
-				Price:         parts[4],
-				IsSeasonal:    parts[5],
-				AvailableFrom: parts[6],
-				AvailableTo:   parts[7],
-			}
-			j.state.MenuItems[menuItem.ItemID] = menuItem
-
-		} else if inBufferedSection && prefix == "B" {
-			// Buffered batch: B|batch_index|eof|client_id|record_type|record_data...
-			if len(parts) < 5 {
-				log.Printf("action: q2_joiner_restore_skip_invalid_buffered | line: %d | parts: %d", lineNum, len(parts))
-				continue
-			}
-
-			batchIndex, _ := strconv.Atoi(parts[1])
-			eof, _ := strconv.ParseBool(parts[2])
-			clientID := parts[3]
-			recordType := parts[4]
-
-			var record protocol.Record
-			switch recordType {
-			case "Q2BestSelling":
-				if len(parts) != 8 {
-					continue
-				}
-				record = &protocol.Q2BestSellingRecord{
-					YearMonth:   parts[5],
-					ItemID:      parts[6],
-					SellingsQty: parts[7],
-				}
-
-			case "Q2MostProfits":
-				if len(parts) != 8 {
-					continue
-				}
-				record = &protocol.Q2MostProfitsRecord{
-					YearMonth: parts[5],
-					ItemID:    parts[6],
-					ProfitSum: parts[7],
-				}
-
-			default:
-				log.Printf("action: q2_joiner_restore_skip_unknown_record_type | type: %s", recordType)
-				continue
-			}
-
-			// Group records by batch index
-			batchRecords[batchIndex] = append(batchRecords[batchIndex], record)
-
-			// Store batch metadata (will be overwritten by same batch but that's ok)
-			currentBatch = &protocol.BatchMessage{
-				BatchIndex: batchIndex,
-				EOF:        eof,
-				ClientID:   clientID,
-				Records:    nil, // Will be filled below
-			}
-		}
-	}
-
-	// Reconstruct batches from grouped records
-	for batchIndex, records := range batchRecords {
-		j.state.BufferedAggBatches = append(j.state.BufferedAggBatches, protocol.BatchMessage{
-			BatchIndex: batchIndex,
-			EOF:        currentBatch.EOF,
-			ClientID:   currentBatch.ClientID,
-			Records:    records,
-		})
-	}
-
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("scan q2 joiner snapshot: %w", err)
-	}
-
-	log.Printf("action: q2_joiner_restore_complete | menu_items: %d | buffered_batches: %d",
-		len(j.state.MenuItems), len(j.state.BufferedAggBatches))
-
-	return nil
 }

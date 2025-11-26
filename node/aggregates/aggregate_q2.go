@@ -32,15 +32,19 @@ func (a *Q2Aggregate) Name() string {
 	return "q2_aggregate_best_selling_most_profits"
 }
 
-// SerializeRecords directly serializes records without intermediate buffer
-// Format: Q|year_month|item_id|quantity\n or P|year_month|item_id|profit\n
-func (a *Q2Aggregate) SerializeRecords(records []protocol.Record) ([]byte, error) {
+// SerializeRecords serializes records with batch index as header
+// Format: BATCH|index\n followed by Q|year_month|item_id|quantity\n or P|year_month|item_id|profit\n
+func (a *Q2Aggregate) SerializeRecords(records []protocol.Record, batchIndex int) ([]byte, error) {
 	if len(records) == 0 {
 		return nil, nil
 	}
 
 	var buf bytes.Buffer
-	buf.Grow(len(records) * 50)
+	buf.Grow(len(records)*50 + 20)
+
+	buf.WriteString("BATCH|")
+	buf.WriteString(strconv.Itoa(batchIndex))
+	buf.WriteByte('\n')
 
 	for _, record := range records {
 		switch r := record.(type) {
@@ -246,23 +250,69 @@ func findMostProfitableItem(items map[string]float64) (string, float64) {
 	return bestItem, bestProfit
 }
 
-// GetBatchesToPublish loads all increments, merges them, and returns final results
+// parseBatchIndexFromIncrement extracts the batch index from the header of an increment
+// Returns -1 if the header is not found or invalid
+func parseBatchIndexFromIncrement(data []byte) int {
+	if len(data) == 0 {
+		return -1
+	}
+
+	// Find first newline
+	newlineIdx := bytes.IndexByte(data, '\n')
+	if newlineIdx == -1 {
+		return -1
+	}
+
+	header := string(data[:newlineIdx])
+	if !strings.HasPrefix(header, "BATCH|") {
+		return -1
+	}
+
+	batchIndexStr := header[6:] // Skip "BATCH|"
+	batchIndex, err := strconv.Atoi(batchIndexStr)
+	if err != nil {
+		return -1
+	}
+
+	return batchIndex
+}
+
+// GetBatchesToPublish loads all increments, filters duplicates, merges them, and returns final results
 func (a *Q2Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIndex int, clientID string) ([]BatchToPublish, error) {
 	if len(historicalIncrements) > 0 {
 		log.Printf("action: q2_merge_start | client_id: %s | increments: %d",
 			clientID, len(historicalIncrements))
 
+		seenBatches := make(map[int]bool)
+		duplicatesSkipped := 0
+
 		for i, incrementData := range historicalIncrements {
-			if len(incrementData) > 0 {
-				if err := a.restoreState(incrementData); err != nil {
-					log.Printf("action: q2_merge_increment | client_id: %s | increment: %d | result: fail | error: %v",
-						clientID, i, err)
-				}
+			if len(incrementData) == 0 {
+				continue
+			}
+
+			batchIdx := parseBatchIndexFromIncrement(incrementData)
+			if batchIdx == -1 {
+				log.Printf("action: q2_merge_skip_invalid | client_id: %s | increment: %d | reason: no_batch_header",
+					clientID, i)
+				continue
+			}
+
+			// Skip duplicates
+			if seenBatches[batchIdx] {
+				duplicatesSkipped++
+				continue
+			}
+			seenBatches[batchIdx] = true
+
+			if err := a.restoreState(incrementData); err != nil {
+				log.Printf("action: q2_merge_increment | client_id: %s | increment: %d | result: fail | error: %v",
+					clientID, i, err)
 			}
 		}
 
-		log.Printf("action: q2_merge_complete | client_id: %s | increments_merged: %d | quantity_entries: %d | profit_entries: %d",
-			clientID, len(historicalIncrements), len(a.quantityData), len(a.profitData))
+		log.Printf("action: q2_merge_complete | client_id: %s | increments_merged: %d | duplicates_skipped: %d | quantity_entries: %d | profit_entries: %d",
+			clientID, len(seenBatches), duplicatesSkipped, len(a.quantityData), len(a.profitData))
 	}
 
 	results, err := a.Finalize(clientID)

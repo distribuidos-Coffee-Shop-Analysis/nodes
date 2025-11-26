@@ -16,7 +16,7 @@ type Joiner interface {
 	ShouldCleanupAfterEOF() bool
 
 	// PERSISTENCY
-	SerializeReferenceRecords(records []protocol.Record) ([]byte, error)
+	SerializeReferenceRecords(records []protocol.Record, batchIndex int) ([]byte, error)
 	SerializeBufferedBatch(batch *protocol.BatchMessage) ([]byte, error)
 	RestoreBufferedBatches(data []byte) ([]protocol.BatchMessage, error)
 }

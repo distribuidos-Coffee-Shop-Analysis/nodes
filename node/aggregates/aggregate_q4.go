@@ -30,9 +30,9 @@ func (q *Q4Aggregate) Name() string {
 	return "Q4Aggregate"
 }
 
-// SerializeRecords directly serializes records without intermediate buffer
-// Format: storeID|userID|count\n
-func (q *Q4Aggregate) SerializeRecords(records []protocol.Record) ([]byte, error) {
+// SerializeRecords serializes records with batch index as header
+// Format: BATCH|index\n followed by storeID|userID|count\n
+func (q *Q4Aggregate) SerializeRecords(records []protocol.Record, batchIndex int) ([]byte, error) {
 	if len(records) == 0 {
 		return nil, nil
 	}
@@ -65,7 +65,11 @@ func (q *Q4Aggregate) SerializeRecords(records []protocol.Record) ([]byte, error
 	}
 
 	var buf bytes.Buffer
-	buf.Grow(len(localCounts) * 50)
+	buf.Grow(len(localCounts)*50 + 20)
+
+	buf.WriteString("BATCH|")
+	buf.WriteString(strconv.Itoa(batchIndex))
+	buf.WriteByte('\n')
 
 	for compositeKey, count := range localCounts {
 		buf.WriteString(compositeKey)
@@ -184,22 +188,66 @@ func (q *Q4Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
 	return results, nil
 }
 
+// parseBatchIndexFromIncrement extracts the batch index from the header of an increment
+func parseBatchIndexFromIncrementQ4(data []byte) int {
+	if len(data) == 0 {
+		return -1
+	}
+
+	newlineIdx := bytes.IndexByte(data, '\n')
+	if newlineIdx == -1 {
+		return -1
+	}
+
+	header := string(data[:newlineIdx])
+	if !strings.HasPrefix(header, "BATCH|") {
+		return -1
+	}
+
+	batchIndexStr := header[6:]
+	batchIndex, err := strconv.Atoi(batchIndexStr)
+	if err != nil {
+		return -1
+	}
+
+	return batchIndex
+}
+
 func (q *Q4Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIndex int, clientID string) ([]BatchToPublish, error) {
 	if len(historicalIncrements) > 0 {
 		log.Printf("action: q4_merge_start | client_id: %s | increments: %d",
 			clientID, len(historicalIncrements))
 
+		seenBatches := make(map[int]bool)
+		duplicatesSkipped := 0
+
 		for i, incrementData := range historicalIncrements {
-			if len(incrementData) > 0 {
-				if err := q.restoreState(incrementData); err != nil {
-					log.Printf("action: q4_merge_increment | client_id: %s | increment: %d | result: fail | error: %v",
-						clientID, i, err)
-				}
+			if len(incrementData) == 0 {
+				continue
+			}
+
+			batchIdx := parseBatchIndexFromIncrementQ4(incrementData)
+			if batchIdx == -1 {
+				log.Printf("action: q4_merge_skip_invalid | client_id: %s | increment: %d | reason: no_batch_header",
+					clientID, i)
+				continue
+			}
+
+			// Skip duplicates
+			if seenBatches[batchIdx] {
+				duplicatesSkipped++
+				continue
+			}
+			seenBatches[batchIdx] = true
+
+			if err := q.restoreState(incrementData); err != nil {
+				log.Printf("action: q4_merge_increment | client_id: %s | increment: %d | result: fail | error: %v",
+					clientID, i, err)
 			}
 		}
 
-		log.Printf("action: q4_merge_complete | client_id: %s | increments_merged: %d | total_unique_pairs: %d",
-			clientID, len(historicalIncrements), len(q.counts))
+		log.Printf("action: q4_merge_complete | client_id: %s | increments_merged: %d | duplicates_skipped: %d | total_unique_pairs: %d",
+			clientID, len(seenBatches), duplicatesSkipped, len(q.counts))
 	}
 
 	cfg := common.GetConfig()

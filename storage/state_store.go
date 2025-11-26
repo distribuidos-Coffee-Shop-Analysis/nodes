@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -18,31 +20,19 @@ type Snapshot struct {
 	Data     []byte
 }
 
-// BatchIndicesSnapshot holds seen batch indices for aggregates
-type BatchIndicesSnapshot struct {
-	Indices []int
-}
-
 // StateStore abstracts the persistence mechanism used by stateful handlers.
 type StateStore interface {
 	Persist(clientID string, snapshot *Snapshot) error
 	Load(clientID string) (*Snapshot, error)
 	Delete(clientID string) error
 
-	// Batch indices persistence (for aggregates with millions of batches)
-	PersistBatchIndices(clientID string, indices []int) error
-	AppendBatchIndex(clientID string, batchIndex int) error // Atomic append of single index
-	LoadBatchIndices(clientID string) ([]int, error)
-	DeleteBatchIndices(clientID string) error
-
-	// Incremental persistence (append-only for aggregates)
-	// Each persist creates a new incremental file: data_clientID_0.bin, data_clientID_1.bin, etc.
+	// Incremental persistence (append-only)
 	PersistIncremental(clientID string, data []byte) error
 	LoadAllIncrements(clientID string) ([][]byte, error)
 	DeleteAllIncrements(clientID string) error
+	LoadBatchIndicesFromIncrements(clientID string) (map[int]bool, error)
 
 	// Buffered batches persistence (for joiners)
-	// Stores buffered aggregated batches separately from reference data
 	PersistBufferedBatches(clientID string, data []byte) error
 	LoadBufferedBatches(clientID string) ([]byte, error)
 	DeleteBufferedBatches(clientID string) error
@@ -172,107 +162,6 @@ func (s *FileStateStore) metaPath(clientID string) string {
 func (s *FileStateStore) dataPath(clientID string) string {
 	filename := fmt.Sprintf("data_%s.bin", clientID)
 	return filepath.Join(s.roleDir, filename)
-}
-
-func (s *FileStateStore) batchesPath(clientID string) string {
-	filename := fmt.Sprintf("batches_%s.bin", clientID)
-	return filepath.Join(s.roleDir, filename)
-}
-
-// PersistBatchIndices writes batch indices to a separate file using efficient format
-// Format: one integer per line
-func (s *FileStateStore) PersistBatchIndices(clientID string, indices []int) error {
-	if len(indices) == 0 {
-		return nil
-	}
-
-	lock := s.getLock(clientID)
-	lock.mu.Lock()
-	defer lock.mu.Unlock()
-
-	var buf []byte
-	capacity := len(indices) * 10
-	buf = make([]byte, 0, capacity)
-
-	for _, idx := range indices {
-		buf = append(buf, fmt.Sprintf("%d\n", idx)...)
-	}
-
-	return writeAtomically(s.batchesPath(clientID), buf)
-}
-
-// LoadBatchIndices reads batch indices from file
-func (s *FileStateStore) LoadBatchIndices(clientID string) ([]int, error) {
-	lock := s.getLock(clientID)
-	lock.mu.RLock()
-	defer lock.mu.RUnlock()
-
-	data, err := os.ReadFile(s.batchesPath(clientID))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, ErrSnapshotNotFound
-		}
-		return nil, err
-	}
-
-	if len(data) == 0 {
-		return []int{}, nil
-	}
-
-	var indices []int
-	var num int
-	start := 0
-	for i := 0; i < len(data); i++ {
-		if data[i] == '\n' {
-			if i > start {
-				_, err := fmt.Sscanf(string(data[start:i]), "%d", &num)
-				if err == nil {
-					indices = append(indices, num)
-				}
-			}
-			start = i + 1
-		}
-	}
-
-	return indices, nil
-}
-
-// DeleteBatchIndices removes the batch indices file
-func (s *FileStateStore) DeleteBatchIndices(clientID string) error {
-	lock := s.getLock(clientID)
-	lock.mu.Lock()
-	defer lock.mu.Unlock()
-
-	if err := os.Remove(s.batchesPath(clientID)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
-	return nil
-}
-
-// AppendBatchIndex atomically appends a single batch index to the file
-// This is much faster than rewriting all indices for high-frequency updates
-func (s *FileStateStore) AppendBatchIndex(clientID string, batchIndex int) error {
-	lock := s.getLock(clientID)
-	lock.mu.Lock()
-	defer lock.mu.Unlock()
-
-	f, err := os.OpenFile(s.batchesPath(clientID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("open batch indices file: %w", err)
-	}
-	defer f.Close()
-
-	if _, err := fmt.Fprintf(f, "%d\n", batchIndex); err != nil {
-		return fmt.Errorf("append batch index: %w", err)
-	}
-
-	// Sync to ensure durability before ACK
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("sync batch indices file: %w", err)
-	}
-
-	return nil
 }
 
 // cleanupOrphanedTempFiles removes leftover temporary files from previous crashes
@@ -512,4 +401,97 @@ func (s *FileStateStore) DeleteBufferedBatches(clientID string) error {
 func (s *FileStateStore) bufferedBatchesPath(clientID string) string {
 	filename := fmt.Sprintf("data_buffered_%s.bin", clientID)
 	return filepath.Join(s.roleDir, filename)
+}
+
+// LoadBatchIndicesFromIncrements reads batch indices from incremental file headers
+// Each incremental file has a header "BATCH|index\n"
+func (s *FileStateStore) LoadBatchIndicesFromIncrements(clientID string) (map[int]bool, error) {
+	lock := s.getLock(clientID)
+	lock.mu.RLock()
+	defer lock.mu.RUnlock()
+
+	batchIndices := make(map[int]bool)
+	seq := 0
+
+	for {
+		incrementalPath := s.incrementalPath(clientID, seq)
+		batchIndex, err := s.readBatchIndexFromFile(incrementalPath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				break
+			}
+			seq++
+			continue
+		}
+
+		batchIndices[batchIndex] = true
+		seq++
+	}
+
+	return batchIndices, nil
+}
+
+// readBatchIndexFromFile reads only the first line (header) of an incremental file
+func (s *FileStateStore) readBatchIndexFromFile(filePath string) (int, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return -1, err
+	}
+	defer f.Close()
+
+	buf := make([]byte, 30)
+	n, err := f.Read(buf)
+	if err != nil && n == 0 {
+		return -1, err
+	}
+
+	header := string(buf[:n])
+	newlineIdx := strings.Index(header, "\n")
+	if newlineIdx == -1 {
+		return -1, fmt.Errorf("no newline in header")
+	}
+
+	header = header[:newlineIdx]
+	if !strings.HasPrefix(header, "BATCH|") {
+		return -1, fmt.Errorf("invalid header format")
+	}
+
+	batchIndexStr := header[6:] // Skip "BATCH|"
+	batchIndex, err := strconv.Atoi(batchIndexStr)
+	if err != nil {
+		return -1, fmt.Errorf("invalid batch index: %w", err)
+	}
+
+	return batchIndex, nil
+}
+
+// ListClients returns all client IDs that have metadata files
+func (s *FileStateStore) ListClients() []string {
+	entries, err := os.ReadDir(s.roleDir)
+	if err != nil {
+		return nil
+	}
+
+	clientSet := make(map[string]bool)
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		if strings.HasPrefix(name, "meta_") && strings.HasSuffix(name, ".bin") {
+			clientID := name[5 : len(name)-4]
+			if clientID != "" {
+				clientSet[clientID] = true
+			}
+		}
+	}
+
+	clients := make([]string, 0, len(clientSet))
+	for clientID := range clientSet {
+		clients = append(clients, clientID)
+	}
+
+	return clients
 }

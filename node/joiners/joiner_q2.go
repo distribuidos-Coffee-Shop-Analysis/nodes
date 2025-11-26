@@ -31,13 +31,17 @@ func (j *Q2Joiner) Name() string {
 
 // SerializeReferenceRecords directly serializes reference records without intermediate buffer
 // Format: R|item_id|item_name|category|price|is_seasonal|available_from|available_to\n
-func (j *Q2Joiner) SerializeReferenceRecords(records []protocol.Record) ([]byte, error) {
+func (j *Q2Joiner) SerializeReferenceRecords(records []protocol.Record, batchIndex int) ([]byte, error) {
 	if len(records) == 0 {
 		return nil, nil
 	}
 
 	var buf bytes.Buffer
-	buf.Grow(len(records) * 100)
+	buf.Grow(len(records)*100 + 20)
+
+	buf.WriteString("BATCH|")
+	buf.WriteString(strconv.Itoa(batchIndex))
+	buf.WriteByte('\n')
 
 	for _, record := range records {
 		menuItem, ok := record.(*protocol.MenuItemRecord)

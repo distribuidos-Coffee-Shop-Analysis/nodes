@@ -19,5 +19,5 @@ type Aggregate interface {
 	Cleanup() error
 
 	// PERSISTENCY
-	SerializeRecords(records []protocol.Record) ([]byte, error)
+	SerializeRecords(records []protocol.Record, batchIndex int) ([]byte, error)
 }

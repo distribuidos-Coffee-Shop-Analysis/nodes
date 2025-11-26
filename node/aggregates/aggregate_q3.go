@@ -36,15 +36,19 @@ func (a *Q3Aggregate) Name() string {
 	return "q3_aggregate_tpv_by_year_half_store"
 }
 
-// SerializeRecords directly serializes records without intermediate buffer
-// Format: year_half|store_id|tpv\n
-func (a *Q3Aggregate) SerializeRecords(records []protocol.Record) ([]byte, error) {
+// SerializeRecords serializes records with batch index as header
+// Format: BATCH|index\n followed by year_half|store_id|tpv\n
+func (a *Q3Aggregate) SerializeRecords(records []protocol.Record, batchIndex int) ([]byte, error) {
 	if len(records) == 0 {
 		return nil, nil
 	}
 
 	var buf bytes.Buffer
-	buf.Grow(len(records) * 50)
+	buf.Grow(len(records)*50 + 20)
+
+	buf.WriteString("BATCH|")
+	buf.WriteString(strconv.Itoa(batchIndex))
+	buf.WriteByte('\n')
 
 	for _, record := range records {
 		q3GroupedRecord, ok := record.(*protocol.Q3GroupedRecord)
@@ -157,23 +161,69 @@ func (a *Q3Aggregate) Finalize(clientId string) ([]protocol.Record, error) {
 	return result, nil
 }
 
-// GetBatchesToPublish loads all increments, merges them, and returns final results
+// parseBatchIndexFromIncrement extracts the batch index from the header of an increment
+// Returns -1 if the header is not found or invalid
+func parseBatchIndexFromIncrementQ3(data []byte) int {
+	if len(data) == 0 {
+		return -1
+	}
+
+	newlineIdx := bytes.IndexByte(data, '\n')
+	if newlineIdx == -1 {
+		return -1
+	}
+
+	header := string(data[:newlineIdx])
+	if !strings.HasPrefix(header, "BATCH|") {
+		return -1
+	}
+
+	batchIndexStr := header[6:]
+	batchIndex, err := strconv.Atoi(batchIndexStr)
+	if err != nil {
+		return -1
+	}
+
+	return batchIndex
+}
+
+// GetBatchesToPublish loads all increments, filters duplicates, merges them, and returns final results
 func (a *Q3Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIndex int, clientID string) ([]BatchToPublish, error) {
 	if len(historicalIncrements) > 0 {
 		log.Printf("action: q3_merge_start | client_id: %s | increments: %d",
 			clientID, len(historicalIncrements))
 
+		seenBatches := make(map[int]bool)
+		duplicatesSkipped := 0
+
 		for i, incrementData := range historicalIncrements {
-			if len(incrementData) > 0 {
-				if err := a.restoreState(incrementData); err != nil {
-					log.Printf("action: q3_merge_increment | client_id: %s | increment: %d | result: fail | error: %v",
-						clientID, i, err)
-				}
+			if len(incrementData) == 0 {
+				continue
+			}
+
+			// Parse batch index from header
+			batchIdx := parseBatchIndexFromIncrementQ3(incrementData)
+			if batchIdx == -1 {
+				log.Printf("action: q3_merge_skip_invalid | client_id: %s | increment: %d | reason: no_batch_header",
+					clientID, i)
+				continue
+			}
+
+			// Skip duplicates
+			if seenBatches[batchIdx] {
+				duplicatesSkipped++
+				continue
+			}
+			seenBatches[batchIdx] = true
+
+			if err := a.restoreState(incrementData); err != nil {
+				log.Printf("action: q3_merge_increment | client_id: %s | increment: %d | result: fail | error: %v",
+					clientID, i, err)
 			}
 		}
 
-		log.Printf("action: q3_merge_complete | client_id: %s | increments_merged: %d | raw_records: %d",
-			clientID, len(historicalIncrements), len(a.rawRecords))
+		log.Printf("action: q3_merge_complete | client_id: %s | increments_merged: %d | duplicates_skipped: %d | raw_records: %d",
+			clientID, len(seenBatches), duplicatesSkipped, len(a.rawRecords))
 	}
 
 	results, err := a.Finalize(clientID)

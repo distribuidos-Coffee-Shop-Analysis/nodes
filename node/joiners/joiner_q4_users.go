@@ -34,13 +34,17 @@ func (j *Q4UserJoiner) Name() string {
 }
 
 // SerializeReferenceRecords directly serializes reference records
-func (j *Q4UserJoiner) SerializeReferenceRecords(records []protocol.Record) ([]byte, error) {
+func (j *Q4UserJoiner) SerializeReferenceRecords(records []protocol.Record, batchIndex int) ([]byte, error) {
 	if len(records) == 0 {
 		return nil, nil
 	}
 
 	var buf bytes.Buffer
-	buf.Grow(len(records) * 30)
+	buf.Grow(len(records)*30 + 20)
+
+	buf.WriteString("BATCH|")
+	buf.WriteString(strconv.Itoa(batchIndex))
+	buf.WriteByte('\n')
 
 	for _, record := range records {
 		userRecord, ok := record.(*protocol.UserRecord)

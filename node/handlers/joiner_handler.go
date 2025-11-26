@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"sync"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
@@ -21,22 +20,27 @@ type JoinerClientState struct {
 	mu                       sync.Mutex
 	joiner                   joiners.Joiner
 	referenceDatasetComplete bool
+	seenBatchIndices         map[int]bool // Batch indices that have been PERSISTED
+	finalizeStarted          bool         // Set when finalize begins
+	finalizeCompleted        bool         // Set after successful publish
 }
 
 // JoinerHandler manages join operations for multiple clients
 type JoinerHandler struct {
+	StatefulHandlerBase
+
 	newJoiner func() joiners.Joiner         // Factory function to create new joiners per client
 	states    map[string]*JoinerClientState // map[string]*JoinerClientState - keyed by clientID
 	statesMu  sync.RWMutex                  // Protects states map
 
 	pub   *middleware.Publisher
 	pubMu sync.Mutex
-
-	stateStore storage.StateStore
 }
 
 type joinerSnapshotMetadata struct {
 	ReferenceDatasetComplete bool `json:"reference_dataset_complete"`
+	FinalizeStarted          bool `json:"finalize_started"`
+	FinalizeCompleted        bool `json:"finalize_completed"`
 }
 
 // NewJoinerHandler creates a new joiner handler with a factory function
@@ -73,6 +77,7 @@ func (h *JoinerHandler) getState(clientID string) *JoinerClientState {
 	st := &JoinerClientState{
 		joiner:                   h.newJoiner(),
 		referenceDatasetComplete: false,
+		seenBatchIndices:         make(map[int]bool),
 	}
 	h.restoreClientState(clientID, st)
 	h.states[clientID] = st
@@ -80,7 +85,7 @@ func (h *JoinerHandler) getState(clientID string) *JoinerClientState {
 }
 
 func (h *JoinerHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
-	h.initStateStore(queueManager.Wiring.Role)
+	h.InitStateStore(queueManager.Wiring.Role)
 
 	pub, err := middleware.NewPublisher(queueManager.Connection, queueManager.Wiring)
 	if err != nil {
@@ -88,6 +93,8 @@ func (h *JoinerHandler) StartHandler(queueManager *middleware.QueueManager, clie
 		return err
 	}
 	h.pub = pub
+
+	h.checkPendingFinalizes()
 
 	err = queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
 		h.Handle(batchMessage, queueManager.Connection, queueManager.Wiring, clientWg, delivery)
@@ -131,8 +138,17 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 
 	state.mu.Lock()
 
-	// 1. Serialize reference
-	data, err := state.joiner.SerializeReferenceRecords(batchMessage.Records)
+	// 1. Check if already processed (idempotency)
+	if state.seenBatchIndices[batchMessage.BatchIndex] {
+		state.mu.Unlock()
+		log.Printf("action: joiner_duplicate_reference | client_id: %s | joiner: %s | batch_index: %d | result: skipped",
+			clientID, state.joiner.Name(), batchMessage.BatchIndex)
+		msg.Ack(false)
+		return nil
+	}
+
+	// 2. Serialize reference
+	data, err := state.joiner.SerializeReferenceRecords(batchMessage.Records, batchMessage.BatchIndex)
 	if err != nil {
 		state.mu.Unlock()
 		log.Printf("action: joiner_serialize | client_id: %s | joiner: %s | result: fail | error: %v",
@@ -141,9 +157,9 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 		return err
 	}
 
-	// 2. Persist incremental data
-	if len(data) > 0 && h.stateStore != nil {
-		if err := h.stateStore.PersistIncremental(clientID, data); err != nil {
+	// 3. Persist incremental data
+	if len(data) > 0 && h.StateStore() != nil {
+		if err := h.StateStore().PersistIncremental(clientID, data); err != nil {
 			state.mu.Unlock()
 			log.Printf("action: joiner_persist_data | client_id: %s | joiner: %s | result: fail | error: %v",
 				clientID, state.joiner.Name(), err)
@@ -152,10 +168,14 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 		}
 	}
 
-	// 3. Handle EOF
+	// 4. Mark as seen
+	state.seenBatchIndices[batchMessage.BatchIndex] = true
+
+	// 5. Handle EOF
 	isEOF := batchMessage.EOF
 	if isEOF {
 		state.referenceDatasetComplete = true
+		state.finalizeStarted = true // Mark finalize started (processing buffered batches)
 
 		if err := h.persistMetadata(clientID, state); err != nil {
 			state.mu.Unlock()
@@ -171,12 +191,17 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 
 	state.mu.Unlock()
 
-	// 4. ACK
+	// 6. ACK
 	msg.Ack(false)
 
-	// 5. Process buffered batches (outside lock)
+	// 7. Process buffered batches (outside lock)
 	if isEOF {
 		h.processBufferedBatchesFromDisk(state, clientID)
+
+		state.mu.Lock()
+		state.finalizeCompleted = true
+		state.mu.Unlock()
+		h.persistMetadata(clientID, state)
 	}
 
 	return nil
@@ -202,8 +227,8 @@ func (h *JoinerHandler) handleAggregatedData(state *JoinerClientState, batchMess
 			return err
 		}
 
-		if len(data) > 0 && h.stateStore != nil {
-			if err := h.stateStore.PersistBufferedBatches(clientID, data); err != nil {
+		if len(data) > 0 && h.StateStore() != nil {
+			if err := h.StateStore().PersistBufferedBatches(clientID, data); err != nil {
 				state.mu.Unlock()
 				log.Printf("action: joiner_persist_buffered | client_id: %s | joiner: %s | result: fail | error: %v",
 					clientID, state.joiner.Name(), err)
@@ -228,9 +253,9 @@ func (h *JoinerHandler) handleAggregatedData(state *JoinerClientState, batchMess
 func (h *JoinerHandler) performJoinAndPublish(state *JoinerClientState, batchMessage *protocol.BatchMessage, msg amqp091.Delivery, clientID string) error {
 
 	var allIncrements [][]byte
-	if h.stateStore != nil {
+	if h.StateStore() != nil {
 		var err error
-		allIncrements, err = h.stateStore.LoadAllIncrements(clientID)
+		allIncrements, err = h.StateStore().LoadAllIncrements(clientID)
 		if err != nil && !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: joiner_load_increments | client_id: %s | joiner: %s | result: fail | error: %v",
 				clientID, state.joiner.Name(), err)
@@ -281,11 +306,11 @@ func (h *JoinerHandler) performJoinAndPublish(state *JoinerClientState, batchMes
 }
 
 func (h *JoinerHandler) processBufferedBatchesFromDisk(state *JoinerClientState, clientID string) {
-	if h.stateStore == nil {
+	if h.StateStore() == nil {
 		return
 	}
 
-	bufferedData, err := h.stateStore.LoadBufferedBatches(clientID)
+	bufferedData, err := h.StateStore().LoadBufferedBatches(clientID)
 	if err != nil {
 		if !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: joiner_load_buffered | client_id: %s | result: fail | error: %v", clientID, err)
@@ -316,15 +341,15 @@ func (h *JoinerHandler) processBufferedBatchesFromDisk(state *JoinerClientState,
 	}
 
 	// Delete buffered batches from disk
-	h.stateStore.DeleteBufferedBatches(clientID)
+	h.StateStore().DeleteBufferedBatches(clientID)
 }
 
 func (h *JoinerHandler) processBufferedBatch(state *JoinerClientState, batchMessage *protocol.BatchMessage, clientID string) error {
 
 	var allIncrements [][]byte
-	if h.stateStore != nil {
+	if h.StateStore() != nil {
 		var err error
-		allIncrements, err = h.stateStore.LoadAllIncrements(clientID)
+		allIncrements, err = h.StateStore().LoadAllIncrements(clientID)
 		if err != nil && !errors.Is(err, storage.ErrSnapshotNotFound) {
 			allIncrements = nil
 		}
@@ -386,39 +411,22 @@ func (h *JoinerHandler) Shutdown() error {
 	return nil
 }
 
-func (h *JoinerHandler) initStateStore(role common.NodeRole) {
-	if h.stateStore != nil {
-		return
-	}
-
-	baseDir := os.Getenv("STATE_BASE_DIR")
-	if baseDir == "" {
-		baseDir = "/app/state"
-	}
-
-	store, err := storage.NewFileStateStore(baseDir, string(role))
-	if err != nil {
-		log.Printf("action: joiner_state_store_init | role: %s | result: fail | error: %v", role, err)
-		return
-	}
-
-	h.stateStore = store
-}
-
 func (h *JoinerHandler) persistMetadata(clientID string, state *JoinerClientState) error {
-	if h.stateStore == nil {
+	if h.StateStore() == nil {
 		return nil
 	}
 
 	meta := joinerSnapshotMetadata{
 		ReferenceDatasetComplete: state.referenceDatasetComplete,
+		FinalizeStarted:          state.finalizeStarted,
+		FinalizeCompleted:        state.finalizeCompleted,
 	}
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {
 		return fmt.Errorf("encode joiner metadata: %w", err)
 	}
 
-	if err := h.stateStore.Persist(clientID, &storage.Snapshot{
+	if err := h.StateStore().Persist(clientID, &storage.Snapshot{
 		Metadata: metaBytes,
 		Data:     nil,
 	}); err != nil {
@@ -429,11 +437,11 @@ func (h *JoinerHandler) persistMetadata(clientID string, state *JoinerClientStat
 }
 
 func (h *JoinerHandler) restoreClientState(clientID string, state *JoinerClientState) {
-	if h.stateStore == nil {
+	if h.StateStore() == nil {
 		return
 	}
 
-	snapshot, err := h.stateStore.Load(clientID)
+	snapshot, err := h.StateStore().Load(clientID)
 	if err != nil {
 		if !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: joiner_restore_state | client_id: %s | result: fail | error: %v", clientID, err)
@@ -444,9 +452,21 @@ func (h *JoinerHandler) restoreClientState(clientID string, state *JoinerClientS
 			log.Printf("action: joiner_restore_metadata | client_id: %s | result: fail | error: %v", clientID, err)
 		} else {
 			state.referenceDatasetComplete = meta.ReferenceDatasetComplete
-			log.Printf("action: joiner_restore_metadata | client_id: %s | result: success | reference_complete: %t",
-				clientID, meta.ReferenceDatasetComplete)
+			state.finalizeStarted = meta.FinalizeStarted
+			state.finalizeCompleted = meta.FinalizeCompleted
+			log.Printf("action: joiner_restore_metadata | client_id: %s | result: success | "+
+				"reference_complete: %t | finalize_started: %t | finalize_completed: %t",
+				clientID, meta.ReferenceDatasetComplete, meta.FinalizeStarted, meta.FinalizeCompleted)
 		}
+	}
+
+	batchIndices, err := h.StateStore().LoadBatchIndicesFromIncrements(clientID)
+	if err != nil {
+		log.Printf("action: joiner_restore_batch_indices | client_id: %s | result: fail | error: %v", clientID, err)
+	} else if len(batchIndices) > 0 {
+		state.seenBatchIndices = batchIndices
+		log.Printf("action: joiner_restore_batch_indices | client_id: %s | result: success | count: %d",
+			clientID, len(batchIndices))
 	}
 
 	log.Printf("action: joiner_restore_complete | client_id: %s | reference_data_complete: %t",
@@ -468,25 +488,62 @@ func (h *JoinerHandler) cleanupClientState(clientID string, state *JoinerClientS
 }
 
 func (h *JoinerHandler) deleteClientSnapshot(clientID string) {
-	if h.stateStore == nil {
+	if h.StateStore() == nil {
 		return
 	}
 
-	if err := h.stateStore.Delete(clientID); err != nil {
+	if err := h.StateStore().Delete(clientID); err != nil {
 		if !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: joiner_state_delete | client_id: %s | result: fail | error: %v", clientID, err)
 		}
 	}
 
-	if err := h.stateStore.DeleteBufferedBatches(clientID); err != nil {
+	if err := h.StateStore().DeleteBufferedBatches(clientID); err != nil {
 		if !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: joiner_buffered_delete | client_id: %s | result: fail | error: %v", clientID, err)
 		}
 	}
 
-	if err := h.stateStore.DeleteAllIncrements(clientID); err != nil {
+	if err := h.StateStore().DeleteAllIncrements(clientID); err != nil {
 		log.Printf("action: joiner_increments_delete | client_id: %s | result: fail | error: %v", clientID, err)
 	} else {
 		log.Printf("action: joiner_increments_delete | client_id: %s | result: success", clientID)
+	}
+}
+
+// checkPendingFinalizes scans for clients that crashed during finalize and resumes them
+func (h *JoinerHandler) checkPendingFinalizes() {
+	if h.StateStore() == nil {
+		return
+	}
+
+	clientIDs := h.ScanExistingClients()
+
+	for _, clientID := range clientIDs {
+		state := h.getState(clientID)
+
+		state.mu.Lock()
+		needsFinalize := state.finalizeStarted && !state.finalizeCompleted
+		alreadyCompleted := state.finalizeCompleted
+		state.mu.Unlock()
+
+		if needsFinalize {
+			log.Printf("action: joiner_resume_finalize | client_id: %s | result: start | "+
+				"reason: crash_during_previous_finalize",
+				clientID)
+
+			h.processBufferedBatchesFromDisk(state, clientID)
+
+			state.mu.Lock()
+			state.finalizeCompleted = true
+			state.mu.Unlock()
+			h.persistMetadata(clientID, state)
+
+			log.Printf("action: joiner_resume_finalize | client_id: %s | result: success", clientID)
+		} else if alreadyCompleted {
+			log.Printf("action: joiner_cleanup_completed | client_id: %s | reason: finalize_already_completed",
+				clientID)
+			h.cleanupClientState(clientID, state)
+		}
 	}
 }

@@ -28,13 +28,17 @@ func (j *Q3Joiner) Name() string {
 }
 
 // SerializeReferenceRecords directly serializes reference records without intermediate buffer
-func (j *Q3Joiner) SerializeReferenceRecords(records []protocol.Record) ([]byte, error) {
+func (j *Q3Joiner) SerializeReferenceRecords(records []protocol.Record, batchIndex int) ([]byte, error) {
 	if len(records) == 0 {
 		return nil, nil
 	}
 
 	var buf bytes.Buffer
-	buf.Grow(len(records) * 150)
+	buf.Grow(len(records)*150 + 20)
+
+	buf.WriteString("BATCH|")
+	buf.WriteString(strconv.Itoa(batchIndex))
+	buf.WriteByte('\n')
 
 	for _, record := range records {
 		store, ok := record.(*protocol.StoreRecord)

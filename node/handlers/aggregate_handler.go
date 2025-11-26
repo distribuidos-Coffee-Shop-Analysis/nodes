@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"sync"
 	"sync/atomic"
 
@@ -28,24 +27,28 @@ type AggregateClientState struct {
 	expectedTotalBatches int
 	seenBatchIndices     map[int]bool // Batch indices that have been PERSISTED
 	uniqueBatchCount     atomic.Int32
+	finalizeStarted      bool // Set when finalize begins
+	finalizeCompleted    bool // Set after successful publish
 }
 
 // AggregateHandler manages aggregate operations for multiple clients
 type AggregateHandler struct {
+	StatefulHandlerBase
+
 	newAggregate func() aggregates.Aggregate      // Factory function to create new aggregates per client
 	states       map[string]*AggregateClientState // map[string]*AggregateClientState - keyed by clientID
 	statesMu     sync.RWMutex                     // Protects states map
 
 	pub   *middleware.Publisher
 	pubMu sync.Mutex
-
-	stateStore storage.StateStore
 }
 
 type aggregateSnapshotMetadata struct {
 	EOFReceived          bool `json:"eof_received"`
 	ExpectedTotalBatches int  `json:"expected_total_batches"`
 	OneTimeFinalize      bool `json:"one_time_finalize"`
+	FinalizeStarted      bool `json:"finalize_started"`
+	FinalizeCompleted    bool `json:"finalize_completed"`
 }
 
 // NewAggregateHandler creates a new aggregate handler with a factory function
@@ -99,7 +102,7 @@ func (h *AggregateHandler) getState(clientID string) *AggregateClientState {
 
 // StartHandler starts the aggregate handler
 func (h *AggregateHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
-	h.initStateStore(queueManager.Wiring.Role)
+	h.InitStateStore(queueManager.Wiring.Role)
 
 	pub, err := middleware.NewPublisher(queueManager.Connection, queueManager.Wiring)
 	if err != nil {
@@ -107,6 +110,8 @@ func (h *AggregateHandler) StartHandler(queueManager *middleware.QueueManager, c
 		return err
 	}
 	h.pub = pub
+
+	h.checkPendingFinalizes()
 
 	err = queueManager.StartConsuming(func(batchMessage *protocol.BatchMessage, delivery amqp091.Delivery) {
 		h.Handle(batchMessage, queueManager.Connection,
@@ -119,6 +124,49 @@ func (h *AggregateHandler) StartHandler(queueManager *middleware.QueueManager, c
 	return nil
 }
 
+// checkPendingFinalizes scans for clients that crashed during finalize and resumes them
+func (h *AggregateHandler) checkPendingFinalizes() {
+	if h.StateStore() == nil {
+		return
+	}
+
+	clientIDs := h.ScanExistingClients()
+
+	for _, clientID := range clientIDs {
+		state := h.getState(clientID)
+
+		state.mu.Lock()
+		needsFinalize := state.finalizeStarted && !state.finalizeCompleted
+		batchIndex := state.expectedTotalBatches - 1
+		state.mu.Unlock()
+
+		if needsFinalize {
+			log.Printf("action: aggregate_resume_finalize | client_id: %s | result: start | "+
+				"reason: crash_during_previous_finalize",
+				clientID)
+
+			finalizeBatch := &protocol.BatchMessage{
+				ClientID:   clientID,
+				BatchIndex: batchIndex,
+				EOF:        true,
+			}
+
+			if err := h.finalizeClient(clientID, state, finalizeBatch); err != nil {
+				log.Printf("action: aggregate_resume_finalize | client_id: %s | result: fail | error: %v",
+					clientID, err)
+			} else {
+				log.Printf("action: aggregate_resume_finalize | client_id: %s | result: success",
+					clientID)
+			}
+		} else if state.finalizeCompleted {
+			log.Printf("action: aggregate_cleanup_completed | client_id: %s | reason: finalize_already_completed",
+				clientID)
+			h.cleanupClientState(clientID, state)
+		}
+	}
+}
+
+// scanExistingClients returns client IDs that have persisted metadata
 // Handle processes a batch message with a simple linear flow:
 // Lock → Check duplicate → Serialize → Persist → Mark seen → Unlock → ACK
 func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
@@ -142,7 +190,7 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	}
 
 	// 2. Serialize records
-	data, err := state.aggregate.SerializeRecords(batchMessage.Records)
+	data, err := state.aggregate.SerializeRecords(batchMessage.Records, batchMessage.BatchIndex)
 	if err != nil {
 		state.mu.Unlock()
 		log.Printf("action: aggregate_serialize | client_id: %s | aggregate: %s | result: fail | error: %v",
@@ -152,8 +200,8 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	}
 
 	// 3. Persist data
-	if len(data) > 0 && h.stateStore != nil {
-		if err := h.stateStore.PersistIncremental(clientID, data); err != nil {
+	if len(data) > 0 && h.StateStore() != nil {
+		if err := h.StateStore().PersistIncremental(clientID, data); err != nil {
 			state.mu.Unlock()
 			log.Printf("action: aggregate_persist_data | client_id: %s | aggregate: %s | result: fail | error: %v",
 				clientID, state.aggregate.Name(), err)
@@ -162,22 +210,11 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 		}
 	}
 
-	// 4. Persist batch index
-	if h.stateStore != nil {
-		if err := h.stateStore.AppendBatchIndex(clientID, batchMessage.BatchIndex); err != nil {
-			state.mu.Unlock()
-			log.Printf("action: aggregate_persist_batch_index | client_id: %s | aggregate: %s | result: fail | error: %v",
-				clientID, state.aggregate.Name(), err)
-			msg.Nack(false, true)
-			return err
-		}
-	}
-
-	// 5. Mark as seen in memory
+	// 4. Mark as seen in memory
 	state.seenBatchIndices[batchMessage.BatchIndex] = true
 	state.uniqueBatchCount.Add(1)
 
-	// 6. Handle EOF
+	// 5. Handle EOF
 	if batchMessage.EOF {
 		expectedTotalBatches := batchMessage.BatchIndex + 1
 		if expectedTotalBatches > state.expectedTotalBatches {
@@ -194,7 +231,7 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 		h.persistMetadata(clientID, state)
 	}
 
-	// 7. Check if ready to finalize
+	// 6. Check if ready to finalize
 	shouldFinalize := false
 	if state.eofReceived && state.oneTimeFinalize && state.expectedTotalBatches > 0 {
 		if state.hasAllBatchesUpTo(state.expectedTotalBatches - 1) {
@@ -229,10 +266,15 @@ func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClien
 		"total_batches_processed: %d | expected_batches: %d",
 		clientID, state.aggregate.Name(), state.uniqueBatchCount.Load(), state.expectedTotalBatches)
 
+	state.mu.Lock()
+	state.finalizeStarted = true
+	state.mu.Unlock()
+	h.persistMetadata(clientID, state)
+
 	var allIncrements [][]byte
-	if h.stateStore != nil {
+	if h.StateStore() != nil {
 		var err error
-		allIncrements, err = h.stateStore.LoadAllIncrements(clientID)
+		allIncrements, err = h.StateStore().LoadAllIncrements(clientID)
 		if err != nil && !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: aggregate_load_increments | client_id: %s | aggregate: %s | result: fail | error: %v",
 				clientID, state.aggregate.Name(), err)
@@ -260,6 +302,14 @@ func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClien
 			clientID, state.aggregate.Name(), err)
 		return err
 	}
+
+	state.mu.Lock()
+	state.finalizeCompleted = true
+	state.mu.Unlock()
+	h.persistMetadata(clientID, state)
+
+	log.Printf("action: aggregate_finalize | client_id: %s | aggregate: %s | result: success",
+		clientID, state.aggregate.Name())
 
 	h.cleanupClientState(clientID, state)
 	return nil
@@ -292,27 +342,8 @@ func (h *AggregateHandler) publishBatches(publisher *middleware.Publisher, batch
 	return nil
 }
 
-func (h *AggregateHandler) initStateStore(role common.NodeRole) {
-	if h.stateStore != nil {
-		return
-	}
-
-	baseDir := os.Getenv("STATE_BASE_DIR")
-	if baseDir == "" {
-		baseDir = "/app/state"
-	}
-
-	store, err := storage.NewFileStateStore(baseDir, string(role))
-	if err != nil {
-		log.Printf("action: aggregate_state_store_init | role: %s | result: fail | error: %v", role, err)
-		return
-	}
-
-	h.stateStore = store
-}
-
 func (h *AggregateHandler) persistMetadata(clientID string, state *AggregateClientState) error {
-	if h.stateStore == nil {
+	if h.StateStore() == nil {
 		return nil
 	}
 
@@ -320,13 +351,15 @@ func (h *AggregateHandler) persistMetadata(clientID string, state *AggregateClie
 		EOFReceived:          state.eofReceived,
 		ExpectedTotalBatches: state.expectedTotalBatches,
 		OneTimeFinalize:      state.oneTimeFinalize,
+		FinalizeStarted:      state.finalizeStarted,
+		FinalizeCompleted:    state.finalizeCompleted,
 	}
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {
 		return fmt.Errorf("encode aggregate metadata: %w", err)
 	}
 
-	if err := h.stateStore.Persist(clientID, &storage.Snapshot{
+	if err := h.StateStore().Persist(clientID, &storage.Snapshot{
 		Metadata: metaBytes,
 		Data:     nil,
 	}); err != nil {
@@ -337,12 +370,12 @@ func (h *AggregateHandler) persistMetadata(clientID string, state *AggregateClie
 }
 
 func (h *AggregateHandler) restoreClientState(clientID string, state *AggregateClientState) {
-	if h.stateStore == nil {
+	if h.StateStore() == nil {
 		return
 	}
 
 	// Restore metadata
-	snapshot, err := h.stateStore.Load(clientID)
+	snapshot, err := h.StateStore().Load(clientID)
 	if err != nil {
 		if !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: aggregate_restore_state | client_id: %s | result: fail | error: %v", clientID, err)
@@ -355,22 +388,20 @@ func (h *AggregateHandler) restoreClientState(clientID string, state *AggregateC
 			state.eofReceived = meta.EOFReceived
 			state.expectedTotalBatches = meta.ExpectedTotalBatches
 			state.oneTimeFinalize = meta.OneTimeFinalize
+			state.finalizeStarted = meta.FinalizeStarted
+			state.finalizeCompleted = meta.FinalizeCompleted
 			log.Printf("action: aggregate_restore_metadata | client_id: %s | result: success | "+
-				"eof_received: %t | expected_batches: %d",
-				clientID, meta.EOFReceived, meta.ExpectedTotalBatches)
+				"eof_received: %t | expected_batches: %d | finalize_started: %t | finalize_completed: %t",
+				clientID, meta.EOFReceived, meta.ExpectedTotalBatches, meta.FinalizeStarted, meta.FinalizeCompleted)
 		}
 	}
 
-	// Restore batch indices
-	batchIndices, err := h.stateStore.LoadBatchIndices(clientID)
+	// Restore batch indices from incremental file headers
+	batchIndices, err := h.StateStore().LoadBatchIndicesFromIncrements(clientID)
 	if err != nil {
-		if !errors.Is(err, storage.ErrSnapshotNotFound) {
-			log.Printf("action: aggregate_restore_batch_indices | client_id: %s | result: fail | error: %v", clientID, err)
-		}
+		log.Printf("action: aggregate_restore_batch_indices | client_id: %s | result: fail | error: %v", clientID, err)
 	} else if len(batchIndices) > 0 {
-		for _, idx := range batchIndices {
-			state.seenBatchIndices[idx] = true
-		}
+		state.seenBatchIndices = batchIndices
 		state.uniqueBatchCount.Store(int32(len(batchIndices)))
 		log.Printf("action: aggregate_restore_batch_indices | client_id: %s | result: success | count: %d",
 			clientID, len(batchIndices))
@@ -382,23 +413,17 @@ func (h *AggregateHandler) restoreClientState(clientID string, state *AggregateC
 }
 
 func (h *AggregateHandler) deleteClientSnapshot(clientID string) {
-	if h.stateStore == nil {
+	if h.StateStore() == nil {
 		return
 	}
 
-	if err := h.stateStore.Delete(clientID); err != nil {
+	if err := h.StateStore().Delete(clientID); err != nil {
 		if !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: aggregate_state_delete | client_id: %s | result: fail | error: %v", clientID, err)
 		}
 	}
 
-	if err := h.stateStore.DeleteBatchIndices(clientID); err != nil {
-		if !errors.Is(err, storage.ErrSnapshotNotFound) {
-			log.Printf("action: aggregate_batch_indices_delete | client_id: %s | result: fail | error: %v", clientID, err)
-		}
-	}
-
-	if err := h.stateStore.DeleteAllIncrements(clientID); err != nil {
+	if err := h.StateStore().DeleteAllIncrements(clientID); err != nil {
 		log.Printf("action: aggregate_increments_delete | client_id: %s | result: fail | error: %v", clientID, err)
 	} else {
 		log.Printf("action: aggregate_increments_delete | client_id: %s | result: success", clientID)

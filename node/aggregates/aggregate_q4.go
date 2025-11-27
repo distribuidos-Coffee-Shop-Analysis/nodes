@@ -32,12 +32,9 @@ func (q *Q4Aggregate) Name() string {
 
 // SerializeRecords serializes records with batch index as header
 // Format: BATCH|index\n followed by storeID|userID|count\n
+// Always returns at least the header to ensure batch is tracked for crash recovery
 func (q *Q4Aggregate) SerializeRecords(records []protocol.Record, batchIndex int) ([]byte, error) {
-	if len(records) == 0 {
-		return nil, nil
-	}
-
-	// First aggregate locally to reduce output size
+	// Aggregate locally to reduce output size
 	localCounts := make(map[string]int, len(records))
 
 	for _, record := range records {
@@ -60,13 +57,8 @@ func (q *Q4Aggregate) SerializeRecords(records []protocol.Record, batchIndex int
 		localCounts[key] += transactionCount
 	}
 
-	if len(localCounts) == 0 {
-		return nil, nil
-	}
-
 	var buf bytes.Buffer
 	buf.Grow(len(localCounts)*50 + 20)
-
 	buf.WriteString("BATCH|")
 	buf.WriteString(strconv.Itoa(batchIndex))
 	buf.WriteByte('\n')

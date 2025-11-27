@@ -26,8 +26,9 @@ type StateStore interface {
 	Load(clientID string) (*Snapshot, error)
 	Delete(clientID string) error
 
-	// Incremental persistence (append-only)
-	PersistIncremental(clientID string, data []byte) error
+	// Incremental persistence - files named by batchIndex for uniqueness
+	// File format: data_<clientID>_<batchIndex>.bin
+	PersistIncremental(clientID string, batchIndex int, data []byte) error
 	LoadAllIncrements(clientID string) ([][]byte, error)
 	DeleteAllIncrements(clientID string) error
 	LoadBatchIndicesFromIncrements(clientID string) (map[int]bool, error)
@@ -39,15 +40,13 @@ type StateStore interface {
 }
 
 // FileStateStore is a filesystem-backed implementation of StateStore.
-// It stores three binary files per client inside <baseDir>/<role>:
+// It stores files per client inside <baseDir>/<role>:
 //   - meta_<client>.bin (metadata)
 //   - data_<client>.bin (handler-defined payload)
-//   - batches_<client>.bin (seen batch indices, one per line)
-//   - data_<client>_0.bin, data_<client>_1.bin, ... (incremental snapshots)
+//   - data_<client>_<batchIndex>.bin (incremental snapshots, named by batchIndex)
 type FileStateStore struct {
-	roleDir         string
-	locks           sync.Map // map[string]*clientLock
-	incrementalSeqs sync.Map // map[clientID]int - tracks next incremental sequence number
+	roleDir string
+	locks   sync.Map // map[string]*clientLock
 }
 
 type clientLock struct {
@@ -233,24 +232,20 @@ func writeAtomically(targetPath string, data []byte) error {
 	return nil
 }
 
-// PersistIncremental appends data as a new incremental file
-// Creates files like: data_<clientID>_0.bin, data_<clientID>_1.bin, etc.
-func (s *FileStateStore) PersistIncremental(clientID string, data []byte) error {
+// PersistIncremental saves data to a file named by batchIndex
+// File: data_<clientID>_<batchIndex>.bin - batchIndex ensures uniqueness
+func (s *FileStateStore) PersistIncremental(clientID string, batchIndex int, data []byte) error {
 	if len(data) == 0 {
-		return nil // Nothing to persist
+		return nil
 	}
 
 	lock := s.getLock(clientID)
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
 
-	// Get next sequence number
-	seq := s.getNextIncrementalSeq(clientID)
-
-	// Write incremental file
-	incrementalPath := s.incrementalPath(clientID, seq)
-	if err := writeAtomically(incrementalPath, data); err != nil {
-		return fmt.Errorf("persist incremental %d: %w", seq, err)
+	filePath := s.incrementalPath(clientID, batchIndex)
+	if err := writeAtomically(filePath, data); err != nil {
+		return fmt.Errorf("persist incremental batch %d: %w", batchIndex, err)
 	}
 
 	return nil
@@ -263,23 +258,33 @@ func (s *FileStateStore) LoadAllIncrements(clientID string) ([][]byte, error) {
 	lock.mu.RLock()
 	defer lock.mu.RUnlock()
 
-	var allData [][]byte
-	seq := 0
+	prefix := fmt.Sprintf("data_%s_", clientID)
+	suffix := ".bin"
 
-	// Read incremental files in order until we find a gap
-	for {
-		incrementalPath := s.incrementalPath(clientID, seq)
-		data, err := os.ReadFile(incrementalPath)
+	entries, err := os.ReadDir(s.roleDir)
+	if err != nil {
+		return nil, ErrSnapshotNotFound
+	}
+
+	var allData [][]byte
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+			continue
+		}
+
+		filePath := filepath.Join(s.roleDir, name)
+		data, err := os.ReadFile(filePath)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				// No more incremental files
-				break
-			}
-			return nil, fmt.Errorf("read incremental %d: %w", seq, err)
+			continue
 		}
 
 		allData = append(allData, data)
-		seq++
 	}
 
 	if len(allData) == 0 {
@@ -295,64 +300,38 @@ func (s *FileStateStore) DeleteAllIncrements(clientID string) error {
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
 
-	seq := 0
-	deletedCount := 0
+	prefix := fmt.Sprintf("data_%s_", clientID)
+	suffix := ".bin"
 
-	// Delete incremental files until we find a gap
-	for {
-		incrementalPath := s.incrementalPath(clientID, seq)
-		err := os.Remove(incrementalPath)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				// No more incremental files
-				break
-			}
-			return fmt.Errorf("delete incremental %d: %w", seq, err)
-		}
-		deletedCount++
-		seq++
+	entries, err := os.ReadDir(s.roleDir)
+	if err != nil {
+		return nil
 	}
 
-	// Reset sequence counter
-	s.incrementalSeqs.Delete(clientID)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+			continue
+		}
+
+		filePath := filepath.Join(s.roleDir, name)
+		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("delete incremental %s: %w", name, err)
+		}
+	}
 
 	return nil
 }
 
-// incrementalPath returns the path for an incremental snapshot file
-func (s *FileStateStore) incrementalPath(clientID string, seq int) string {
-	filename := fmt.Sprintf("data_%s_%d.bin", clientID, seq)
+// incrementalPath returns the path for an incremental file
+// Format: data_<clientID>_<batchIndex>.bin
+func (s *FileStateStore) incrementalPath(clientID string, batchIndex int) string {
+	filename := fmt.Sprintf("data_%s_%d.bin", clientID, batchIndex)
 	return filepath.Join(s.roleDir, filename)
-}
-
-// getNextIncrementalSeq gets and increments the sequence number for a client
-// On first call for a client, scans existing files to find the next available sequence
-func (s *FileStateStore) getNextIncrementalSeq(clientID string) int {
-	// Try to load existing sequence
-	if seqVal, ok := s.incrementalSeqs.Load(clientID); ok {
-		seq := seqVal.(int)
-		s.incrementalSeqs.Store(clientID, seq+1)
-		return seq
-	}
-
-	// First time for this client - find the next available sequence by scanning existing files
-	nextSeq := s.findNextAvailableSeq(clientID)
-	s.incrementalSeqs.Store(clientID, nextSeq+1)
-
-	return nextSeq
-}
-
-// findNextAvailableSeq scans existing incremental files to find the next available sequence number
-func (s *FileStateStore) findNextAvailableSeq(clientID string) int {
-	seq := 0
-	for {
-		incrementalPath := s.incrementalPath(clientID, seq)
-		if _, err := os.Stat(incrementalPath); os.IsNotExist(err) {
-			// Found a gap - this is the next available sequence
-			return seq
-		}
-		seq++
-	}
 }
 
 // PersistBufferedBatches persists buffered aggregated batches (for joiners)
@@ -428,59 +407,37 @@ func (s *FileStateStore) LoadBatchIndicesFromIncrements(clientID string) (map[in
 	lock.mu.RLock()
 	defer lock.mu.RUnlock()
 
-	batchIndices := make(map[int]bool)
-	seq := 0
+	prefix := fmt.Sprintf("data_%s_", clientID)
+	suffix := ".bin"
 
-	for {
-		incrementalPath := s.incrementalPath(clientID, seq)
-		batchIndex, err := s.readBatchIndexFromFile(incrementalPath)
+	entries, err := os.ReadDir(s.roleDir)
+	if err != nil {
+		return make(map[int]bool), nil
+	}
+
+	batchIndices := make(map[int]bool)
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+			continue
+		}
+
+		// Extract batchIndex from filename: data_clientID_BATCHINDEX.bin
+		batchIndexStr := name[len(prefix) : len(name)-len(suffix)]
+		batchIndex, err := strconv.Atoi(batchIndexStr)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				break
-			}
-			seq++
 			continue
 		}
 
 		batchIndices[batchIndex] = true
-		seq++
 	}
 
 	return batchIndices, nil
-}
-
-// readBatchIndexFromFile reads only the first line (header) of an incremental file
-func (s *FileStateStore) readBatchIndexFromFile(filePath string) (int, error) {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return -1, err
-	}
-	defer f.Close()
-
-	buf := make([]byte, 30)
-	n, err := f.Read(buf)
-	if err != nil && n == 0 {
-		return -1, err
-	}
-
-	header := string(buf[:n])
-	newlineIdx := strings.Index(header, "\n")
-	if newlineIdx == -1 {
-		return -1, fmt.Errorf("no newline in header")
-	}
-
-	header = header[:newlineIdx]
-	if !strings.HasPrefix(header, "BATCH|") {
-		return -1, fmt.Errorf("invalid header format")
-	}
-
-	batchIndexStr := header[6:] // Skip "BATCH|"
-	batchIndex, err := strconv.Atoi(batchIndexStr)
-	if err != nil {
-		return -1, fmt.Errorf("invalid batch index: %w", err)
-	}
-
-	return batchIndex, nil
 }
 
 // ListClients returns all client IDs that have metadata files

@@ -199,9 +199,9 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 		return err
 	}
 
-	// 3. Persist data
+	// 3. Persist data (file named by batchIndex for uniqueness)
 	if len(data) > 0 && h.StateStore() != nil {
-		if err := h.StateStore().PersistIncremental(clientID, data); err != nil {
+		if err := h.StateStore().PersistIncremental(clientID, batchMessage.BatchIndex, data); err != nil {
 			state.mu.Unlock()
 			log.Printf("action: aggregate_persist_data | client_id: %s | aggregate: %s | result: fail | error: %v",
 				clientID, state.aggregate.Name(), err)

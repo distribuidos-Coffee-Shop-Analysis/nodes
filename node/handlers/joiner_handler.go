@@ -157,9 +157,9 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 		return err
 	}
 
-	// 3. Persist incremental data
+	// 3. Persist incremental data (file named by batchIndex for uniqueness)
 	if len(data) > 0 && h.StateStore() != nil {
-		if err := h.StateStore().PersistIncremental(clientID, data); err != nil {
+		if err := h.StateStore().PersistIncremental(clientID, batchMessage.BatchIndex, data); err != nil {
 			state.mu.Unlock()
 			log.Printf("action: joiner_persist_data | client_id: %s | joiner: %s | result: fail | error: %v",
 				clientID, state.joiner.Name(), err)

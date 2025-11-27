@@ -38,11 +38,8 @@ func (a *Q3Aggregate) Name() string {
 
 // SerializeRecords serializes records with batch index as header
 // Format: BATCH|index\n followed by year_half|store_id|tpv\n
+// Always returns at least the header to ensure batch is tracked for crash recovery
 func (a *Q3Aggregate) SerializeRecords(records []protocol.Record, batchIndex int) ([]byte, error) {
-	if len(records) == 0 {
-		return nil, nil
-	}
-
 	var buf bytes.Buffer
 	buf.Grow(len(records)*50 + 20)
 

@@ -326,15 +326,33 @@ func (s *FileStateStore) incrementalPath(clientID string, seq int) string {
 }
 
 // getNextIncrementalSeq gets and increments the sequence number for a client
+// On first call for a client, scans existing files to find the next available sequence
 func (s *FileStateStore) getNextIncrementalSeq(clientID string) int {
-	// Load current sequence or initialize to 0
-	seqVal, _ := s.incrementalSeqs.LoadOrStore(clientID, 0)
-	seq := seqVal.(int)
+	// Try to load existing sequence
+	if seqVal, ok := s.incrementalSeqs.Load(clientID); ok {
+		seq := seqVal.(int)
+		s.incrementalSeqs.Store(clientID, seq+1)
+		return seq
+	}
 
-	// Increment for next time
-	s.incrementalSeqs.Store(clientID, seq+1)
+	// First time for this client - find the next available sequence by scanning existing files
+	nextSeq := s.findNextAvailableSeq(clientID)
+	s.incrementalSeqs.Store(clientID, nextSeq+1)
 
-	return seq
+	return nextSeq
+}
+
+// findNextAvailableSeq scans existing incremental files to find the next available sequence number
+func (s *FileStateStore) findNextAvailableSeq(clientID string) int {
+	seq := 0
+	for {
+		incrementalPath := s.incrementalPath(clientID, seq)
+		if _, err := os.Stat(incrementalPath); os.IsNotExist(err) {
+			// Found a gap - this is the next available sequence
+			return seq
+		}
+		seq++
+	}
 }
 
 // PersistBufferedBatches persists buffered aggregated batches (for joiners)

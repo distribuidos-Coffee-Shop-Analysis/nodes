@@ -118,6 +118,34 @@ func (c *Config) GetQ4JoinersCount() int {
 	return section.Key("Q4_JOINERS_COUNT").MustInt(1)
 }
 
+// GetWorkerAmount returns the number of workers for a given node role
+func (c *Config) GetWorkerAmount(role NodeRole) int {
+	section := c.cfg.Section("DEFAULT")
+
+	switch role {
+	// Aggregates
+	case RoleAggregateQ2, RoleAggregateQ3, RoleAggregateQ4:
+		return section.Key("AGGREGATE_WORKER_AMOUNT").MustInt(300)
+
+	// Q4 User Joiner
+	case RoleJoinerQ4U:
+		return section.Key("JOINER_Q4_USERS_WORKER_AMOUNT").MustInt(300)
+
+	// Simple Joiners (Q2, Q3, Q4 Stores)
+	case RoleJoinerQ2, RoleJoinerQ3, RoleJoinerQ4S:
+		return section.Key("SIMPLE_JOINER_WORKER_AMOUNT").MustInt(2)
+
+	// Filters and GroupBys
+	case RoleFilterYear, RoleFilterHour, RoleFilterAmount,
+		RoleGroupByQ2, RoleGroupByQ3, RoleGroupByQ4:
+		return section.Key("FILTER_AND_GROUPBY_WORKER_AMOUNT").MustInt(500)
+
+	default:
+		// Default fallback
+		return section.Key("FILTER_AND_GROUPBY_WORKER_AMOUNT").MustInt(500)
+	}
+}
+
 // GetConfig returns the global configuration instance (singleton pattern)
 func GetConfig() *Config {
 	configOnce.Do(func() {

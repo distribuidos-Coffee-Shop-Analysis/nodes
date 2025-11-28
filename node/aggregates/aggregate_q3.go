@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	worker "github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
@@ -23,13 +24,34 @@ type Q3RawRecord struct {
 type Q3Aggregate struct {
 	rawRecords []Q3RawRecord
 	clientID   string
+
+	// In-memory cache of serialized increments to avoid disk reads for already-processed batches
+	cachedIncrements map[int][]byte
 }
 
 // NewQ3Aggregate creates a new Q3 aggregate processor
 func NewQ3Aggregate() *Q3Aggregate {
 	return &Q3Aggregate{
-		rawRecords: make([]Q3RawRecord, 0),
+		rawRecords:       make([]Q3RawRecord, 0),
+		cachedIncrements: make(map[int][]byte),
 	}
+}
+
+// CacheIncrement stores a serialized increment in memory to avoid disk reads during finalize
+func (a *Q3Aggregate) CacheIncrement(batchIndex int, data []byte) {
+	if a.cachedIncrements == nil {
+		a.cachedIncrements = make(map[int][]byte)
+	}
+	a.cachedIncrements[batchIndex] = data
+}
+
+// GetCachedBatchIndices returns the set of batch indices currently in memory cache
+func (a *Q3Aggregate) GetCachedBatchIndices() map[int]bool {
+	result := make(map[int]bool, len(a.cachedIncrements))
+	for idx := range a.cachedIncrements {
+		result[idx] = true
+	}
+	return result
 }
 
 func (a *Q3Aggregate) Name() string {
@@ -184,44 +206,58 @@ func parseBatchIndexFromIncrementQ3(data []byte) int {
 	return batchIndex
 }
 
-// GetBatchesToPublish loads all increments, filters duplicates, merges them, and returns final results
+// GetBatchesToPublish merges cached + disk increments, filters duplicates, and returns final results.
+// Cached increments (from current session) are used first, disk is only read for missing batches (post-crash recovery).
 func (a *Q3Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIndex int, clientID string) ([]BatchToPublish, error) {
-	if len(historicalIncrements) > 0 {
-		log.Printf("action: q3_merge_start | client_id: %s | increments: %d",
-			clientID, len(historicalIncrements))
+	// Collect all increments: cached first, then disk (for recovery)
+	seenBatches := make(map[int]bool)
+	var validIncrements [][]byte
+	cachedUsed := 0
+	diskUsed := 0
+	duplicatesSkipped := 0
 
-		seenBatches := make(map[int]bool)
-		duplicatesSkipped := 0
+	// Phase 1a: Use cached increments first (already in memory, no disk read needed)
+	for batchIdx, data := range a.cachedIncrements {
+		if len(data) == 0 {
+			continue
+		}
+		seenBatches[batchIdx] = true
+		validIncrements = append(validIncrements, data)
+		cachedUsed++
+	}
 
-		for i, incrementData := range historicalIncrements {
-			if len(incrementData) == 0 {
-				continue
-			}
-
-			// Parse batch index from header
-			batchIdx := parseBatchIndexFromIncrementQ3(incrementData)
-			if batchIdx == -1 {
-				log.Printf("action: q3_merge_skip_invalid | client_id: %s | increment: %d | reason: no_batch_header",
-					clientID, i)
-				continue
-			}
-
-			// Skip duplicates
-			if seenBatches[batchIdx] {
-				duplicatesSkipped++
-				continue
-			}
-			seenBatches[batchIdx] = true
-
-			if err := a.restoreState(incrementData); err != nil {
-				log.Printf("action: q3_merge_increment | client_id: %s | increment: %d | result: fail | error: %v",
-					clientID, i, err)
-			}
+	// Phase 1b: Add disk increments only for batches not in cache (recovery scenario)
+	for i, incrementData := range historicalIncrements {
+		if len(incrementData) == 0 {
+			continue
 		}
 
-		log.Printf("action: q3_merge_complete | client_id: %s | increments_merged: %d | duplicates_skipped: %d | raw_records: %d",
-			clientID, len(seenBatches), duplicatesSkipped, len(a.rawRecords))
+		batchIdx := parseBatchIndexFromIncrementQ3(incrementData)
+		if batchIdx == -1 {
+			log.Printf("action: q3_merge_skip_invalid | client_id: %s | increment: %d | reason: no_batch_header",
+				clientID, i)
+			continue
+		}
+
+		if seenBatches[batchIdx] {
+			duplicatesSkipped++
+			continue
+		}
+		seenBatches[batchIdx] = true
+		validIncrements = append(validIncrements, incrementData)
+		diskUsed++
 	}
+
+	log.Printf("action: q3_merge_start | client_id: %s | cached: %d | from_disk: %d | duplicates_skipped: %d",
+		clientID, cachedUsed, diskUsed, duplicatesSkipped)
+
+	// Phase 2: Process valid increments in parallel
+	if len(validIncrements) > 0 {
+		a.mergeIncrementsParallel(validIncrements)
+	}
+
+	log.Printf("action: q3_merge_complete | client_id: %s | total_merged: %d | raw_records: %d",
+		clientID, len(validIncrements), len(a.rawRecords))
 
 	results, err := a.Finalize(clientID)
 	if err != nil {
@@ -238,7 +274,61 @@ func (a *Q3Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 	}, nil
 }
 
+// mergeIncrementsParallel processes increments using the common worker pool
+func (a *Q3Aggregate) mergeIncrementsParallel(increments [][]byte) {
+	worker.ProcessAndMerge(
+		increments,
+		0, // Use default workers
+		parseQ3Increment,
+		func(results [][]Q3RawRecord) {
+			for _, records := range results {
+				a.rawRecords = append(a.rawRecords, records...)
+			}
+		},
+	)
+}
+
+// parseQ3Increment parses a single increment into Q3RawRecord slice
+func parseQ3Increment(data []byte) []Q3RawRecord {
+	if len(data) == 0 {
+		return nil
+	}
+
+	var records []Q3RawRecord
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) == 0 {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) != 3 {
+			continue
+		}
+
+		yearHalf := parts[0]
+		storeID := parts[1]
+		tpvValue := parts[2]
+
+		tpv, err := strconv.ParseFloat(tpvValue, 64)
+		if err != nil {
+			continue
+		}
+
+		records = append(records, Q3RawRecord{
+			YearHalf: yearHalf,
+			StoreID:  storeID,
+			TPV:      tpv,
+		})
+	}
+
+	return records
+}
+
 func (a *Q3Aggregate) Cleanup() error {
 	a.rawRecords = nil
+	a.cachedIncrements = nil
 	return nil
 }

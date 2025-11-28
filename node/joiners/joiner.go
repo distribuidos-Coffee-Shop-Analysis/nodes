@@ -19,4 +19,8 @@ type Joiner interface {
 	SerializeReferenceRecords(records []protocol.Record, batchIndex int) ([]byte, error)
 	SerializeBufferedBatch(batch *protocol.BatchMessage) ([]byte, error)
 	RestoreBufferedBatches(data []byte) ([]protocol.BatchMessage, error)
+
+	// CACHE
+	CacheIncrement(batchIndex int, data []byte)
+	GetCachedBatchIndices() map[int]bool
 }

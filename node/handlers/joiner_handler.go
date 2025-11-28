@@ -166,6 +166,9 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 			msg.Nack(false, true)
 			return err
 		}
+
+		// Cache increment in memory to avoid disk reads during join
+		state.joiner.CacheIncrement(batchMessage.BatchIndex, data)
 	}
 
 	// 4. Mark as seen
@@ -255,7 +258,10 @@ func (h *JoinerHandler) performJoinAndPublish(state *JoinerClientState, batchMes
 	var allIncrements [][]byte
 	if h.StateStore() != nil {
 		var err error
-		allIncrements, err = h.StateStore().LoadAllIncrements(clientID)
+		// Get cached batch indices to skip reading those files from disk
+		excludeIndices := state.joiner.GetCachedBatchIndices()
+
+		allIncrements, err = h.StateStore().LoadAllIncrementsExcluding(clientID, excludeIndices)
 		if err != nil && !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: joiner_load_increments | client_id: %s | joiner: %s | result: fail | error: %v",
 				clientID, state.joiner.Name(), err)
@@ -349,7 +355,10 @@ func (h *JoinerHandler) processBufferedBatch(state *JoinerClientState, batchMess
 	var allIncrements [][]byte
 	if h.StateStore() != nil {
 		var err error
-		allIncrements, err = h.StateStore().LoadAllIncrements(clientID)
+		// Get cached batch indices to skip reading those files from disk
+		excludeIndices := state.joiner.GetCachedBatchIndices()
+
+		allIncrements, err = h.StateStore().LoadAllIncrementsExcluding(clientID, excludeIndices)
 		if err != nil && !errors.Is(err, storage.ErrSnapshotNotFound) {
 			allIncrements = nil
 		}

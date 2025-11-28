@@ -20,4 +20,8 @@ type Aggregate interface {
 
 	// PERSISTENCY
 	SerializeRecords(records []protocol.Record, batchIndex int) ([]byte, error)
+
+	// CACHE
+	CacheIncrement(batchIndex int, data []byte)
+	GetCachedBatchIndices() map[int]bool
 }

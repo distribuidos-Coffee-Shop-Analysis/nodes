@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	worker "github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
@@ -18,14 +19,35 @@ type Q2Aggregate struct {
 	quantityData map[string]int
 	profitData   map[string]float64
 	clientID     string
+
+	// In-memory cache of serialized increments to avoid disk reads for already-processed batches
+	cachedIncrements map[int][]byte
 }
 
 // NewQ2Aggregate creates a new Q2 aggregate processor
 func NewQ2Aggregate() *Q2Aggregate {
 	return &Q2Aggregate{
-		quantityData: make(map[string]int),
-		profitData:   make(map[string]float64),
+		quantityData:     make(map[string]int),
+		profitData:       make(map[string]float64),
+		cachedIncrements: make(map[int][]byte),
 	}
+}
+
+// CacheIncrement stores a serialized increment in memory to avoid disk reads during finalize
+func (a *Q2Aggregate) CacheIncrement(batchIndex int, data []byte) {
+	if a.cachedIncrements == nil {
+		a.cachedIncrements = make(map[int][]byte)
+	}
+	a.cachedIncrements[batchIndex] = data
+}
+
+// GetCachedBatchIndices returns the set of batch indices currently in memory cache
+func (a *Q2Aggregate) GetCachedBatchIndices() map[int]bool {
+	result := make(map[int]bool, len(a.cachedIncrements))
+	for idx := range a.cachedIncrements {
+		result[idx] = true
+	}
+	return result
 }
 
 func (a *Q2Aggregate) Name() string {
@@ -147,7 +169,7 @@ func (a *Q2Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
 		a.clientID = clientID
 	}
 
-	log.Printf("action: q2_aggregate_finalize | client_id: %s | quantity_entries: %d | profit_entries: %d",
+	log.Printf("action: q2_aggregate_finalize_started | client_id: %s | quantity_entries: %d | profit_entries: %d",
 		clientID, len(a.quantityData), len(a.profitData))
 
 	quantityByMonth := make(map[string]map[string]int)
@@ -274,43 +296,64 @@ func parseBatchIndexFromIncrement(data []byte) int {
 	return batchIndex
 }
 
-// GetBatchesToPublish loads all increments, filters duplicates, merges them, and returns final results
+// q2WorkerResult holds the local state from a worker
+type q2WorkerResult struct {
+	quantityData map[string]int
+	profitData   map[string]float64
+}
+
+// GetBatchesToPublish merges cached + disk increments, filters duplicates, and returns final results.
+// Cached increments (from current session) are used first, disk is only read for missing batches (post-crash recovery).
 func (a *Q2Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIndex int, clientID string) ([]BatchToPublish, error) {
-	if len(historicalIncrements) > 0 {
-		log.Printf("action: q2_merge_start | client_id: %s | increments: %d",
-			clientID, len(historicalIncrements))
+	// Collect all increments: cached first, then disk (for recovery)
+	seenBatches := make(map[int]bool)
+	var validIncrements [][]byte
+	cachedUsed := 0
+	diskUsed := 0
+	duplicatesSkipped := 0
 
-		seenBatches := make(map[int]bool)
-		duplicatesSkipped := 0
+	// Phase 1a: Use cached increments first (already in memory, no disk read needed)
+	for batchIdx, data := range a.cachedIncrements {
+		if len(data) == 0 {
+			continue
+		}
+		seenBatches[batchIdx] = true
+		validIncrements = append(validIncrements, data)
+		cachedUsed++
+	}
 
-		for i, incrementData := range historicalIncrements {
-			if len(incrementData) == 0 {
-				continue
-			}
-
-			batchIdx := parseBatchIndexFromIncrement(incrementData)
-			if batchIdx == -1 {
-				log.Printf("action: q2_merge_skip_invalid | client_id: %s | increment: %d | reason: no_batch_header",
-					clientID, i)
-				continue
-			}
-
-			// Skip duplicates
-			if seenBatches[batchIdx] {
-				duplicatesSkipped++
-				continue
-			}
-			seenBatches[batchIdx] = true
-
-			if err := a.restoreState(incrementData); err != nil {
-				log.Printf("action: q2_merge_increment | client_id: %s | increment: %d | result: fail | error: %v",
-					clientID, i, err)
-			}
+	// Phase 1b: Add disk increments only for batches not in cache (recovery scenario)
+	for i, incrementData := range historicalIncrements {
+		if len(incrementData) == 0 {
+			continue
 		}
 
-		log.Printf("action: q2_merge_complete | client_id: %s | increments_merged: %d | duplicates_skipped: %d | quantity_entries: %d | profit_entries: %d",
-			clientID, len(seenBatches), duplicatesSkipped, len(a.quantityData), len(a.profitData))
+		batchIdx := parseBatchIndexFromIncrement(incrementData)
+		if batchIdx == -1 {
+			log.Printf("action: q2_merge_skip_invalid | client_id: %s | increment: %d | reason: no_batch_header",
+				clientID, i)
+			continue
+		}
+
+		if seenBatches[batchIdx] {
+			duplicatesSkipped++
+			continue
+		}
+		seenBatches[batchIdx] = true
+		validIncrements = append(validIncrements, incrementData)
+		diskUsed++
 	}
+
+	log.Printf("action: q2_merge_start | client_id: %s | cached: %d | from_disk: %d | duplicates_skipped: %d",
+		clientID, cachedUsed, diskUsed, duplicatesSkipped)
+
+	// Phase 2: Process valid increments in parallel
+	if len(validIncrements) > 0 {
+		a.mergeIncrements(validIncrements)
+	}
+
+	log.Printf("action: q2_merge_complete | client_id: %s | total_merged: %d | quantity_entries: %d | profit_entries: %d",
+		clientID, len(validIncrements), len(a.quantityData), len(a.profitData))
 
 	results, err := a.Finalize(clientID)
 	if err != nil {
@@ -327,8 +370,79 @@ func (a *Q2Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 	}, nil
 }
 
+// mergeIncrements processes increments using the common worker pool
+func (a *Q2Aggregate) mergeIncrements(increments [][]byte) {
+	worker.ProcessAndMerge(
+		increments,
+		0, // Use default workers
+		parseQ2Increment,
+		func(results []q2WorkerResult) {
+			for _, result := range results {
+				for key, quantity := range result.quantityData {
+					a.quantityData[key] += quantity
+				}
+				for key, profit := range result.profitData {
+					a.profitData[key] += profit
+				}
+			}
+		},
+	)
+}
+
+// parseQ2Increment parses a single increment into local maps
+func parseQ2Increment(data []byte) q2WorkerResult {
+	result := q2WorkerResult{
+		quantityData: make(map[string]int),
+		profitData:   make(map[string]float64),
+	}
+
+	if len(data) == 0 {
+		return result
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) == 0 {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) != 4 {
+			continue
+		}
+
+		recordType := parts[0]
+		yearMonth := parts[1]
+		itemID := parts[2]
+		value := parts[3]
+
+		productID := yearMonth + "|" + itemID
+
+		switch recordType {
+		case "Q":
+			quantity, err := strconv.Atoi(value)
+			if err != nil {
+				continue
+			}
+			result.quantityData[productID] += quantity
+
+		case "P":
+			profit, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				continue
+			}
+			result.profitData[productID] += profit
+		}
+	}
+
+	return result
+}
+
 func (a *Q2Aggregate) Cleanup() error {
 	a.quantityData = nil
 	a.profitData = nil
+	a.cachedIncrements = nil
 	return nil
 }

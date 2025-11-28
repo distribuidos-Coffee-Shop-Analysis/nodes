@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
+	worker "github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
@@ -18,12 +19,33 @@ import (
 type Q4Aggregate struct {
 	counts   map[string]int // "storeID|userID" -> count
 	clientID string
+
+	// In-memory cache of serialized increments to avoid disk reads for already-processed batches
+	cachedIncrements map[int][]byte
 }
 
 func NewQ4Aggregate() *Q4Aggregate {
 	return &Q4Aggregate{
-		counts: make(map[string]int, 100000),
+		counts:           make(map[string]int, 100000),
+		cachedIncrements: make(map[int][]byte),
 	}
+}
+
+// CacheIncrement stores a serialized increment in memory to avoid disk reads during finalize
+func (q *Q4Aggregate) CacheIncrement(batchIndex int, data []byte) {
+	if q.cachedIncrements == nil {
+		q.cachedIncrements = make(map[int][]byte)
+	}
+	q.cachedIncrements[batchIndex] = data
+}
+
+// GetCachedBatchIndices returns the set of batch indices currently in memory cache
+func (q *Q4Aggregate) GetCachedBatchIndices() map[int]bool {
+	result := make(map[int]bool, len(q.cachedIncrements))
+	for idx := range q.cachedIncrements {
+		result[idx] = true
+	}
+	return result
 }
 
 func (q *Q4Aggregate) Name() string {
@@ -205,42 +227,58 @@ func parseBatchIndexFromIncrementQ4(data []byte) int {
 	return batchIndex
 }
 
+// GetBatchesToPublish merges cached + disk increments, filters duplicates, and returns final results.
+// Cached increments (from current session) are used first, disk is only read for missing batches (post-crash recovery).
 func (q *Q4Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIndex int, clientID string) ([]BatchToPublish, error) {
-	if len(historicalIncrements) > 0 {
-		log.Printf("action: q4_merge_start | client_id: %s | increments: %d",
-			clientID, len(historicalIncrements))
+	// Collect all increments: cached first, then disk (for recovery)
+	seenBatches := make(map[int]bool)
+	var validIncrements [][]byte
+	cachedUsed := 0
+	diskUsed := 0
+	duplicatesSkipped := 0
 
-		seenBatches := make(map[int]bool)
-		duplicatesSkipped := 0
+	// Phase 1a: Use cached increments first (already in memory, no disk read needed)
+	for batchIdx, data := range q.cachedIncrements {
+		if len(data) == 0 {
+			continue
+		}
+		seenBatches[batchIdx] = true
+		validIncrements = append(validIncrements, data)
+		cachedUsed++
+	}
 
-		for i, incrementData := range historicalIncrements {
-			if len(incrementData) == 0 {
-				continue
-			}
-
-			batchIdx := parseBatchIndexFromIncrementQ4(incrementData)
-			if batchIdx == -1 {
-				log.Printf("action: q4_merge_skip_invalid | client_id: %s | increment: %d | reason: no_batch_header",
-					clientID, i)
-				continue
-			}
-
-			// Skip duplicates
-			if seenBatches[batchIdx] {
-				duplicatesSkipped++
-				continue
-			}
-			seenBatches[batchIdx] = true
-
-			if err := q.restoreState(incrementData); err != nil {
-				log.Printf("action: q4_merge_increment | client_id: %s | increment: %d | result: fail | error: %v",
-					clientID, i, err)
-			}
+	// Phase 1b: Add disk increments only for batches not in cache (recovery scenario)
+	for i, incrementData := range historicalIncrements {
+		if len(incrementData) == 0 {
+			continue
 		}
 
-		log.Printf("action: q4_merge_complete | client_id: %s | increments_merged: %d | duplicates_skipped: %d | total_unique_pairs: %d",
-			clientID, len(seenBatches), duplicatesSkipped, len(q.counts))
+		batchIdx := parseBatchIndexFromIncrementQ4(incrementData)
+		if batchIdx == -1 {
+			log.Printf("action: q4_merge_skip_invalid | client_id: %s | increment: %d | reason: no_batch_header",
+				clientID, i)
+			continue
+		}
+
+		if seenBatches[batchIdx] {
+			duplicatesSkipped++
+			continue
+		}
+		seenBatches[batchIdx] = true
+		validIncrements = append(validIncrements, incrementData)
+		diskUsed++
 	}
+
+	log.Printf("action: q4_merge_start | client_id: %s | cached: %d | from_disk: %d | duplicates_skipped: %d",
+		clientID, cachedUsed, diskUsed, duplicatesSkipped)
+
+	// Phase 2: Process valid increments in parallel
+	if len(validIncrements) > 0 {
+		q.mergeIncrementsParallel(validIncrements)
+	}
+
+	log.Printf("action: q4_merge_complete | client_id: %s | total_merged: %d | unique_pairs: %d",
+		clientID, len(validIncrements), len(q.counts))
 
 	cfg := common.GetConfig()
 	joinersCount := cfg.GetQ4JoinersCount()
@@ -285,7 +323,59 @@ func (q *Q4Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 	return batchesToPublish, nil
 }
 
+// mergeIncrementsParallel processes increments using the common worker pool
+func (q *Q4Aggregate) mergeIncrementsParallel(increments [][]byte) {
+	worker.ProcessAndMerge(
+		increments,
+		0, // Use default workers
+		parseQ4Increment,
+		func(results []map[string]int) {
+			for _, localCounts := range results {
+				for key, count := range localCounts {
+					q.counts[key] += count
+				}
+			}
+		},
+	)
+}
+
+// parseQ4Increment parses a single increment into a counts map
+func parseQ4Increment(data []byte) map[string]int {
+	localCounts := make(map[string]int)
+
+	if len(data) == 0 {
+		return localCounts
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) == 0 {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) != 3 {
+			continue
+		}
+
+		storeID := parts[0]
+		userID := parts[1]
+		count, err := strconv.Atoi(parts[2])
+		if err != nil {
+			continue
+		}
+
+		compositeKey := storeID + "|" + userID
+		localCounts[compositeKey] += count
+	}
+
+	return localCounts
+}
+
 func (q *Q4Aggregate) Cleanup() error {
 	q.counts = nil
+	q.cachedIncrements = nil
 	return nil
 }

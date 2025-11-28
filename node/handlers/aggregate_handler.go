@@ -208,6 +208,9 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 			msg.Nack(false, true)
 			return err
 		}
+
+		// Cache increment in memory to avoid disk reads during finalize
+		state.aggregate.CacheIncrement(batchMessage.BatchIndex, data)
 	}
 
 	// 4. Mark as seen in memory
@@ -262,7 +265,7 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 
 // finalizeClient performs the complete finalization process for a client
 func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClientState, batchMessage *protocol.BatchMessage) error {
-	log.Printf("action: aggregate_finalize | client_id: %s | aggregate: %s | result: start | "+
+	log.Printf("action: aggregate_finalize_started | client_id: %s | aggregate: %s | result: start | "+
 		"total_batches_processed: %d | expected_batches: %d",
 		clientID, state.aggregate.Name(), state.uniqueBatchCount.Load(), state.expectedTotalBatches)
 
@@ -274,15 +277,18 @@ func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClien
 	var allIncrements [][]byte
 	if h.StateStore() != nil {
 		var err error
-		allIncrements, err = h.StateStore().LoadAllIncrements(clientID)
+		// Get cached batch indices to skip reading those files from disk
+		excludeIndices := state.aggregate.GetCachedBatchIndices()
+
+		allIncrements, err = h.StateStore().LoadAllIncrementsExcluding(clientID, excludeIndices)
 		if err != nil && !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: aggregate_load_increments | client_id: %s | aggregate: %s | result: fail | error: %v",
 				clientID, state.aggregate.Name(), err)
 			allIncrements = nil
-		} else if len(allIncrements) > 0 {
+		} else if len(allIncrements) > 0 || len(excludeIndices) > 0 {
 			log.Printf("action: aggregate_load_increments | client_id: %s | aggregate: %s | "+
-				"increments: %d | result: success",
-				clientID, state.aggregate.Name(), len(allIncrements))
+				"from_disk: %d | cached: %d | result: success",
+				clientID, state.aggregate.Name(), len(allIncrements), len(excludeIndices))
 		}
 	}
 

@@ -278,3 +278,10 @@ func (j *Q3Joiner) Cleanup() error {
 func (j *Q3Joiner) ShouldCleanupAfterEOF() bool {
 	return false
 }
+
+func (j *Q3Joiner) CacheIncrement(batchIndex int, data []byte) {
+}
+
+func (j *Q3Joiner) GetCachedBatchIndices() map[int]bool {
+	return nil
+}	

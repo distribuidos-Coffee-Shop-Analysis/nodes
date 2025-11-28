@@ -281,3 +281,10 @@ func (j *Q4StoreJoiner) Cleanup() error {
 func (j *Q4StoreJoiner) ShouldCleanupAfterEOF() bool {
 	return false
 }
+
+func (j *Q4StoreJoiner) CacheIncrement(batchIndex int, data []byte) {
+}
+
+func (j *Q4StoreJoiner) GetCachedBatchIndices() map[int]bool {
+	return nil
+}

@@ -10,6 +10,8 @@ import (
 	"sync"
 )
 
+const MaxConcurrentFileReads = 20
+
 // ErrSnapshotNotFound is returned when there is no persisted snapshot for the given client.
 var ErrSnapshotNotFound = errors.New("state snapshot not found")
 
@@ -29,7 +31,7 @@ type StateStore interface {
 	// Incremental persistence - files named by batchIndex for uniqueness
 	// File format: data_<clientID>_<batchIndex>.bin
 	PersistIncremental(clientID string, batchIndex int, data []byte) error
-	LoadAllIncrements(clientID string) ([][]byte, error)
+	LoadAllIncrementsExcluding(clientID string, excludeBatchIndices map[int]bool) ([][]byte, error)
 	DeleteAllIncrements(clientID string) error
 	LoadBatchIndicesFromIncrements(clientID string) (map[int]bool, error)
 
@@ -216,10 +218,6 @@ func writeAtomically(targetPath string, data []byte) error {
 		return fmt.Errorf("write temp file %s: %w", tmpName, err)
 	}
 
-	if err := tmpFile.Sync(); err != nil {
-		return fmt.Errorf("sync temp file %s: %w", tmpName, err)
-	}
-
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("close temp file %s: %w", tmpName, err)
 	}
@@ -251,9 +249,15 @@ func (s *FileStateStore) PersistIncremental(clientID string, batchIndex int, dat
 	return nil
 }
 
-// LoadAllIncrements loads all incremental files for a client
-// Returns them in order: [data_0, data_1, data_2, ...]
-func (s *FileStateStore) LoadAllIncrements(clientID string) ([][]byte, error) {
+// fileReadResult holds the result of reading a single file
+type fileReadResult struct {
+	data []byte
+	err  error
+}
+
+// LoadAllIncrementsExcluding loads incremental files for a client, skipping files
+// whose batchIndex is in excludeBatchIndices. This avoids reading files already cached in memory.
+func (s *FileStateStore) LoadAllIncrementsExcluding(clientID string, excludeBatchIndices map[int]bool) ([][]byte, error) {
 	lock := s.getLock(clientID)
 	lock.mu.RLock()
 	defer lock.mu.RUnlock()
@@ -266,8 +270,9 @@ func (s *FileStateStore) LoadAllIncrements(clientID string) ([][]byte, error) {
 		return nil, ErrSnapshotNotFound
 	}
 
-	var allData [][]byte
-
+	// Collect file paths to read, excluding cached batch indices
+	var filePaths []string
+	skippedCount := 0
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -278,20 +283,85 @@ func (s *FileStateStore) LoadAllIncrements(clientID string) ([][]byte, error) {
 			continue
 		}
 
-		filePath := filepath.Join(s.roleDir, name)
-		data, err := os.ReadFile(filePath)
+		// Extract batchIndex from filename: data_clientID_BATCHINDEX.bin
+		batchIndexStr := name[len(prefix) : len(name)-len(suffix)]
+		batchIndex, err := strconv.Atoi(batchIndexStr)
 		if err != nil {
+			// Can't parse batch index, include it anyway
+			filePaths = append(filePaths, filepath.Join(s.roleDir, name))
 			continue
 		}
 
-		allData = append(allData, data)
+		// Skip if this batch is already cached in memory
+		if excludeBatchIndices != nil && excludeBatchIndices[batchIndex] {
+			skippedCount++
+			continue
+		}
+
+		filePaths = append(filePaths, filepath.Join(s.roleDir, name))
 	}
 
-	if len(allData) == 0 {
+	if skippedCount > 0 {
+		fmt.Printf("info: skipped %d cached files for client %s (reading %d from disk)\n",
+			skippedCount, clientID, len(filePaths))
+	}
+
+	if len(filePaths) == 0 {
+		if skippedCount > 0 {
+			// All files were cached, return empty (not an error)
+			return nil, nil
+		}
 		return nil, ErrSnapshotNotFound
 	}
 
+	allData := s.readFilesParallel(filePaths)
+
 	return allData, nil
+}
+
+// readFilesParallel reads multiple files with limited concurrency using a semaphore pattern.
+func (s *FileStateStore) readFilesParallel(filePaths []string) [][]byte {
+	numFiles := len(filePaths)
+	if numFiles == 0 {
+		return nil
+	}
+
+	// Semaphore: buffered channel limits concurrent disk reads
+	semaphore := make(chan struct{}, MaxConcurrentFileReads)
+
+	// Results channel to collect file data
+	resultsCh := make(chan fileReadResult, numFiles)
+
+	var wg sync.WaitGroup
+
+	for _, path := range filePaths {
+		wg.Add(1)
+		go func(filePath string) {
+			defer wg.Done()
+
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }() // Release when done
+
+			data, err := os.ReadFile(filePath)
+			resultsCh <- fileReadResult{data: data, err: err}
+		}(path)
+	}
+
+	// Close results channel after all goroutines complete
+	go func() {
+		wg.Wait()
+		close(resultsCh)
+	}()
+
+	// Collect results
+	allData := make([][]byte, 0, numFiles)
+	for result := range resultsCh {
+		if result.err == nil && len(result.data) > 0 {
+			allData = append(allData, result.data)
+		}
+	}
+
+	return allData
 }
 
 // DeleteAllIncrements removes all incremental files for a client

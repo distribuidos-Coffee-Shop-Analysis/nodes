@@ -3,6 +3,7 @@ package middleware
 import (
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
@@ -11,7 +12,8 @@ import (
 
 const HEARTBEAT_SECONDS = 3
 
-// QueueManager manages RabbitMQ connections and queue operations for the filter node
+// QueueManager manages RabbitMQ connections and queue operations using a Pipeline architecture
+// The pipeline separates network I/O (few consumers) from processing (many processors)
 type QueueManager struct {
 	host       string
 	port       int
@@ -20,7 +22,9 @@ type QueueManager struct {
 	Connection *amqp.Connection
 	channel    *amqp.Channel
 
-	poolManager *WorkerPoolManager
+	// Pipeline components
+	pipelines  []*Pipeline
+	pipelineMu sync.Mutex
 
 	Wiring *common.NodeWiring
 }
@@ -29,12 +33,12 @@ func NewQueueManagerWithWiring(w *common.NodeWiring) *QueueManager {
 	cfg := common.GetConfig()
 	r := cfg.GetRabbitmqConfig()
 	return &QueueManager{
-		host:        r.Host,
-		port:        r.Port,
-		username:    r.Username,
-		password:    r.Password,
-		poolManager: NewWorkerPoolManager(),
-		Wiring:      w,
+		host:      r.Host,
+		port:      r.Port,
+		username:  r.Username,
+		password:  r.Password,
+		pipelines: make([]*Pipeline, 0),
+		Wiring:    w,
 	}
 }
 
@@ -68,27 +72,19 @@ func (qm *QueueManager) Connect() error {
 	}
 
 	// Declare and bind queues for each binding
-	// - If UseSharedQueue=true: use SharedQueueName (all nodes consume from same queue)
-	// - If UseSharedQueue=false and multiple bindings: use IndividualQueueName + suffix (e.g., role.nodeID_0, role.nodeID_1)
-	// - If UseSharedQueue=false and single binding: use IndividualQueueName (e.g., role.nodeID)
 	for i, b := range qm.Wiring.Bindings {
 		var queueName string
 
 		if b.UseSharedQueue {
-			// Shared queue: all nodes consume from the same queue
 			queueName = qm.Wiring.SharedQueueName
 		} else {
-			// Individual queue per node
 			if len(qm.Wiring.Bindings) > 1 {
-				// Multiple bindings without shared queue: add suffix to differentiate
 				queueName = fmt.Sprintf("%s_%d", qm.Wiring.IndividualQueueName, i)
 			} else {
-				// Single binding: use base name
 				queueName = qm.Wiring.IndividualQueueName
 			}
 		}
 
-		// Declare queue
 		q, err := qm.channel.QueueDeclare(queueName, true, false, false, false, nil)
 		if err != nil {
 			_ = qm.channel.Close()
@@ -96,7 +92,6 @@ func (qm *QueueManager) Connect() error {
 			return fmt.Errorf("declare queue %s: %w", queueName, err)
 		}
 
-		// Bind queue to exchange
 		if err := qm.channel.QueueBind(q.Name, b.RoutingKey, b.Exchange, false, nil); err != nil {
 			_ = qm.channel.Close()
 			_ = qm.Connection.Close()
@@ -133,44 +128,78 @@ func (qm *QueueManager) getQueueName(bindingIndex int) string {
 	return qm.Wiring.IndividualQueueName
 }
 
-// StartConsuming starts consuming from configured input queue(s) using worker pools
-// For normal nodes: creates one worker pool for a single queue
-// For joiner nodes: creates multiple worker pools (one per input dataset/queue)
+// StartConsuming starts consuming from configured input queue(s) using the Pipeline architecture
+// The pipeline separates network I/O from processing for better performance:
+// - Few RabbitMQ consumers with high prefetch (network efficient)
+// - Many processing goroutines reading from Go channels (CPU efficient)
+// The callback handles everything: processing, publishing, and ACK/NACK
 func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessage, delivery amqp.Delivery)) error {
 	cfg := common.GetConfig()
-	numWorkers := cfg.GetWorkerAmount(qm.Wiring.Role)
+	pipelineConfig := cfg.GetPipelineConfig(qm.Wiring.Role)
 
-	log.Printf("action: start_consuming | role: %s | workers_per_pool: %d | num_queues: %d",
-		qm.Wiring.Role, numWorkers, len(qm.Wiring.Bindings))
+	log.Printf("action: start_consuming_pipeline | role: %s | consumers: %d | prefetch: %d | processors: %d | num_queues: %d",
+		qm.Wiring.Role,
+		pipelineConfig.NumConsumers,
+		pipelineConfig.ConsumerPrefetch,
+		pipelineConfig.NumProcessors,
+		len(qm.Wiring.Bindings))
 
+	var wg sync.WaitGroup
+
+	// Start a pipeline for each queue binding
 	for i := range qm.Wiring.Bindings {
 		queueName := qm.getQueueName(i)
 
-		pool := NewWorkerPool(queueName, qm.Connection, callback, numWorkers)
-		qm.poolManager.AddPool(pool)
+		config := PipelineConfig{
+			NumConsumers:     pipelineConfig.NumConsumers,
+			ConsumerPrefetch: pipelineConfig.ConsumerPrefetch,
+			NumProcessors:    pipelineConfig.NumProcessors,
+			InputBufferSize:  pipelineConfig.InputBufferSize,
+		}
+
+		pipeline := NewPipeline(config, qm.Connection)
+
+		qm.pipelineMu.Lock()
+		qm.pipelines = append(qm.pipelines, pipeline)
+		qm.pipelineMu.Unlock()
+
+		// The callback handles everything: processing, publishing, ACK/NACK
+		if err := pipeline.Start(queueName, callback); err != nil {
+			qm.StopConsuming()
+			return fmt.Errorf("failed to start pipeline for queue %s: %w", queueName, err)
+		}
+
+		wg.Add(1)
+		go func(p *Pipeline) {
+			defer wg.Done()
+			p.Wait()
+		}(pipeline)
 	}
 
-	if err := qm.poolManager.StartAll(); err != nil {
-		return fmt.Errorf("failed to start worker pools: %w", err)
-	}
-
-	qm.poolManager.WaitAll()
+	// Wait for all pipelines to complete
+	wg.Wait()
 
 	return nil
 }
 
-// StopConsuming stops all worker pools gracefully
+// StopConsuming stops all pipelines gracefully
 func (qm *QueueManager) StopConsuming() {
-	log.Println("action: stop_consuming | status: stopping_worker_pools")
-	qm.poolManager.StopAll()
+	log.Println("action: stop_consuming | status: stopping_pipelines")
+
+	qm.pipelineMu.Lock()
+	pipelines := qm.pipelines
+	qm.pipelineMu.Unlock()
+
+	for _, p := range pipelines {
+		p.Stop()
+	}
+
 	log.Println("action: stop_consuming | result: success")
 }
 
-// MessageMiddleware interface methods
-
-// Close closes the connection and stops all workers
+// Close closes the connection and stops all pipelines
 func (qm *QueueManager) Close() error {
-	qm.poolManager.StopAll()
+	qm.StopConsuming()
 
 	var err error
 	if qm.Connection != nil && !qm.Connection.IsClosed() {

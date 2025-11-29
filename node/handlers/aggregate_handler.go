@@ -142,8 +142,8 @@ func (h *AggregateHandler) checkPendingFinalizes() {
 
 		if needsFinalize {
 			log.Printf("action: aggregate_resume_finalize | client_id: %s | result: start | "+
-				"reason: crash_during_previous_finalize",
-				clientID)
+				"reason: crash_during_previous_finalize" + " expectedTotalBatches: %d",
+				clientID, state.expectedTotalBatches)
 
 			finalizeBatch := &protocol.BatchMessage{
 				ClientID:   clientID,
@@ -199,19 +199,21 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 		return err
 	}
 
-	// 3. Persist data (file named by batchIndex for uniqueness)
-	if len(data) > 0 && h.StateStore() != nil {
-		if err := h.StateStore().PersistIncremental(clientID, batchMessage.BatchIndex, data); err != nil {
-			state.mu.Unlock()
-			log.Printf("action: aggregate_persist_data | client_id: %s | aggregate: %s | result: fail | error: %v",
-				clientID, state.aggregate.Name(), err)
-			msg.Nack(false, true)
-			return err
-		}
-
-		// Cache increment in memory to avoid disk reads during finalize
-		state.aggregate.CacheIncrement(batchMessage.BatchIndex, data)
+	// 3. Persist and cache data
+	if len(data) == 0 {
+		log.Printf("action: aggregate_empty_data | client_id: %s | aggregate: %s | batch_index: %d | records: %d | result: warning",
+			clientID, state.aggregate.Name(), batchMessage.BatchIndex, len(batchMessage.Records))
 	}
+
+	if err := h.StateStore().PersistIncremental(clientID, batchMessage.BatchIndex, data); err != nil {
+		state.mu.Unlock()
+		log.Printf("action: aggregate_persist_data | client_id: %s | aggregate: %s | result: fail | error: %v",
+			clientID, state.aggregate.Name(), err)
+		msg.Nack(false, true)
+		return err
+	}
+
+	state.aggregate.CacheIncrement(batchMessage.BatchIndex, data)
 
 	// 4. Mark as seen in memory
 	state.seenBatchIndices[batchMessage.BatchIndex] = true
@@ -277,6 +279,8 @@ func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClien
 	var allIncrements [][]byte
 	if h.StateStore() != nil {
 		var err error
+		expectedTotal := int(state.uniqueBatchCount.Load())
+
 		// Get cached batch indices to skip reading those files from disk
 		excludeIndices := state.aggregate.GetCachedBatchIndices()
 
@@ -289,6 +293,41 @@ func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClien
 			log.Printf("action: aggregate_load_increments | client_id: %s | aggregate: %s | "+
 				"from_disk: %d | cached: %d | result: success",
 				clientID, state.aggregate.Name(), len(allIncrements), len(excludeIndices))
+		}
+
+		// Verify that the total matches expected
+		totalAvailable := len(allIncrements) + len(excludeIndices)
+		if totalAvailable < expectedTotal {
+			log.Printf("action: aggregate_batch_count_mismatch | client_id: %s | aggregate: %s | "+
+				"expected: %d | available: %d | from_disk: %d | cached: %d | missing: %d | "+
+				"recovery: clearing_cache_and_reloading_all_from_disk",
+				clientID, state.aggregate.Name(), expectedTotal, totalAvailable,
+				len(allIncrements), len(excludeIndices), expectedTotal-totalAvailable)
+
+			state.aggregate.ClearCache()
+
+			allIncrements, err = h.StateStore().LoadAllIncrementsExcluding(clientID, nil)
+			if err != nil && !errors.Is(err, storage.ErrSnapshotNotFound) {
+				log.Printf("action: aggregate_reload_all | client_id: %s | aggregate: %s | result: fail | error: %v",
+					clientID, state.aggregate.Name(), err)
+			} else {
+				log.Printf("action: aggregate_reload_all | client_id: %s | aggregate: %s | "+
+					"from_disk: %d | result: success",
+					clientID, state.aggregate.Name(), len(allIncrements))
+
+				if len(allIncrements) < expectedTotal {
+					stillMissing := expectedTotal - len(allIncrements)
+					log.Printf("action: aggregate_batches_unrecoverable | client_id: %s | aggregate: %s | "+
+						"expected: %d | recovered_from_disk: %d | permanently_lost: %d | "+
+						"reason: batches_were_acked_but_not_persisted_before_crash",
+						clientID, state.aggregate.Name(), expectedTotal, len(allIncrements), stillMissing)
+				}
+			}
+		} else if totalAvailable > expectedTotal {
+			log.Printf("action: aggregate_batch_count_excess | client_id: %s | aggregate: %s | "+
+				"expected: %d | available: %d | from_disk: %d | cached: %d | excess: %d",
+				clientID, state.aggregate.Name(), expectedTotal, totalAvailable,
+				len(allIncrements), len(excludeIndices), totalAvailable-expectedTotal)
 		}
 	}
 

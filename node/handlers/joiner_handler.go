@@ -157,19 +157,21 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 		return err
 	}
 
-	// 3. Persist incremental data (file named by batchIndex for uniqueness)
-	if len(data) > 0 && h.StateStore() != nil {
-		if err := h.StateStore().PersistIncremental(clientID, batchMessage.BatchIndex, data); err != nil {
-			state.mu.Unlock()
-			log.Printf("action: joiner_persist_data | client_id: %s | joiner: %s | result: fail | error: %v",
-				clientID, state.joiner.Name(), err)
-			msg.Nack(false, true)
-			return err
-		}
-
-		// Cache increment in memory to avoid disk reads during join
-		state.joiner.CacheIncrement(batchMessage.BatchIndex, data)
+	// 3. Persist and cache data
+	if len(data) == 0 {
+		log.Printf("action: joiner_empty_data | client_id: %s | joiner: %s | batch_index: %d | records: %d | result: warning",
+			clientID, state.joiner.Name(), batchMessage.BatchIndex, len(batchMessage.Records))
 	}
+
+	if err := h.StateStore().PersistIncremental(clientID, batchMessage.BatchIndex, data); err != nil {
+		state.mu.Unlock()
+		log.Printf("action: joiner_persist_data | client_id: %s | joiner: %s | result: fail | error: %v",
+			clientID, state.joiner.Name(), err)
+		msg.Nack(false, true)
+		return err
+	}
+
+	state.joiner.CacheIncrement(batchMessage.BatchIndex, data)
 
 	// 4. Mark as seen
 	state.seenBatchIndices[batchMessage.BatchIndex] = true
@@ -200,11 +202,6 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 	// 7. Process buffered batches (outside lock)
 	if isEOF {
 		h.processBufferedBatchesFromDisk(state, clientID)
-
-		state.mu.Lock()
-		state.finalizeCompleted = true
-		state.mu.Unlock()
-		h.persistMetadata(clientID, state)
 	}
 
 	return nil
@@ -302,10 +299,19 @@ func (h *JoinerHandler) performJoinAndPublish(state *JoinerClientState, batchMes
 	log.Printf("action: joiner_publish | client_id: %s | joiner: %s | result: success | batch_index: %d | joined_records: %d | eof: %t",
 		clientID, state.joiner.Name(), batchMessage.BatchIndex, len(joinedRecords), batchMessage.EOF)
 
-	if batchMessage.EOF && state.joiner.ShouldCleanupAfterEOF() {
-		log.Printf("action: joiner_eof_received | client_id: %s | joiner: %s | result: cleaning_up",
-			clientID, state.joiner.Name())
-		h.cleanupClientState(clientID, state)
+	if batchMessage.EOF {
+		state.mu.Lock()
+		state.finalizeCompleted = true
+		state.mu.Unlock()
+		h.persistMetadata(clientID, state)
+
+		log.Printf("action: joiner_finalize_complete | client_id: %s | joiner: %s", clientID, state.joiner.Name())
+
+		if state.joiner.ShouldCleanupAfterEOF() {
+			log.Printf("action: joiner_eof_received | client_id: %s | joiner: %s | result: cleaning_up",
+				clientID, state.joiner.Name())
+			h.cleanupClientState(clientID, state)
+		}
 	}
 
 	return nil
@@ -389,8 +395,17 @@ func (h *JoinerHandler) processBufferedBatch(state *JoinerClientState, batchMess
 	log.Printf("action: joiner_publish | client_id: %s | joiner: %s | result: success | batch_index: %d | joined_records: %d | eof: %t | source: buffered",
 		clientID, state.joiner.Name(), batchMessage.BatchIndex, len(joinedRecords), batchMessage.EOF)
 
-	if batchMessage.EOF && state.joiner.ShouldCleanupAfterEOF() {
-		h.cleanupClientState(clientID, state)
+	if batchMessage.EOF {
+		state.mu.Lock()
+		state.finalizeCompleted = true
+		state.mu.Unlock()
+		h.persistMetadata(clientID, state)
+
+		log.Printf("action: joiner_finalize_complete | client_id: %s | joiner: %s | source: buffered", clientID, state.joiner.Name())
+
+		if state.joiner.ShouldCleanupAfterEOF() {
+			h.cleanupClientState(clientID, state)
+		}
 	}
 
 	return nil
@@ -542,11 +557,6 @@ func (h *JoinerHandler) checkPendingFinalizes() {
 				clientID)
 
 			h.processBufferedBatchesFromDisk(state, clientID)
-
-			state.mu.Lock()
-			state.finalizeCompleted = true
-			state.mu.Unlock()
-			h.persistMetadata(clientID, state)
 
 			log.Printf("action: joiner_resume_finalize | client_id: %s | result: success", clientID)
 		} else if alreadyCompleted {

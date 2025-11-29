@@ -40,7 +40,7 @@ func (node *Node) Run() error {
 		return err
 	}
 
-	log.Println("action: filter_node_started | result: success | msg: processing transactions...")
+	log.Println("action: node_started | result: success | msg: processing transactions...")
 
 	return nil
 }

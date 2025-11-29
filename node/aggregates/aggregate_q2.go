@@ -42,12 +42,20 @@ func (a *Q2Aggregate) CacheIncrement(batchIndex int, data []byte) {
 }
 
 // GetCachedBatchIndices returns the set of batch indices currently in memory cache
+// Only returns indices with non-empty data to avoid excluding batches that would then be skipped
 func (a *Q2Aggregate) GetCachedBatchIndices() map[int]bool {
 	result := make(map[int]bool, len(a.cachedIncrements))
-	for idx := range a.cachedIncrements {
-		result[idx] = true
+	for idx, data := range a.cachedIncrements {
+		if len(data) > 0 {
+			result[idx] = true
+		}
 	}
 	return result
+}
+
+// ClearCache clears the in-memory cache to force using disk data during finalize
+func (a *Q2Aggregate) ClearCache() {
+	a.cachedIncrements = make(map[int][]byte)
 }
 
 func (a *Q2Aggregate) Name() string {
@@ -309,12 +317,16 @@ func (a *Q2Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 	seenBatches := make(map[int]bool)
 	var validIncrements [][]byte
 	cachedUsed := 0
+	cachedEmpty := 0
 	diskUsed := 0
+	diskEmpty := 0
+	diskInvalidHeader := 0
 	duplicatesSkipped := 0
 
 	// Phase 1a: Use cached increments first (already in memory, no disk read needed)
 	for batchIdx, data := range a.cachedIncrements {
 		if len(data) == 0 {
+			cachedEmpty++
 			continue
 		}
 		seenBatches[batchIdx] = true
@@ -325,11 +337,13 @@ func (a *Q2Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 	// Phase 1b: Add disk increments only for batches not in cache (recovery scenario)
 	for i, incrementData := range historicalIncrements {
 		if len(incrementData) == 0 {
+			diskEmpty++
 			continue
 		}
 
 		batchIdx := parseBatchIndexFromIncrement(incrementData)
 		if batchIdx == -1 {
+			diskInvalidHeader++
 			log.Printf("action: q2_merge_skip_invalid | client_id: %s | increment: %d | reason: no_batch_header",
 				clientID, i)
 			continue
@@ -344,8 +358,8 @@ func (a *Q2Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 		diskUsed++
 	}
 
-	log.Printf("action: q2_merge_start | client_id: %s | cached: %d | from_disk: %d | duplicates_skipped: %d",
-		clientID, cachedUsed, diskUsed, duplicatesSkipped)
+	log.Printf("action: q2_merge_start | client_id: %s | cached: %d | cached_empty: %d | from_disk: %d | disk_empty: %d | disk_invalid_header: %d | duplicates_skipped: %d",
+		clientID, cachedUsed, cachedEmpty, diskUsed, diskEmpty, diskInvalidHeader, duplicatesSkipped)
 
 	// Phase 2: Process valid increments in parallel
 	if len(validIncrements) > 0 {

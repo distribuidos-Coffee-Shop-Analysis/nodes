@@ -218,6 +218,10 @@ func writeAtomically(targetPath string, data []byte) error {
 		return fmt.Errorf("write temp file %s: %w", tmpName, err)
 	}
 
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("sync temp file %s: %w", tmpName, err)
+	}
+
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("close temp file %s: %w", tmpName, err)
 	}
@@ -234,6 +238,8 @@ func writeAtomically(targetPath string, data []byte) error {
 // File: data_<clientID>_<batchIndex>.bin - batchIndex ensures uniqueness
 func (s *FileStateStore) PersistIncremental(clientID string, batchIndex int, data []byte) error {
 	if len(data) == 0 {
+		fmt.Printf("warning: PersistIncremental called with empty data | client_id: %s | batch_index: %d | skipping_write\n",
+			clientID, batchIndex)
 		return nil
 	}
 
@@ -241,7 +247,7 @@ func (s *FileStateStore) PersistIncremental(clientID string, batchIndex int, dat
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
 
-	filePath := s.incrementalPath(clientID, batchIndex)
+	filePath := s.getPathForClientAndBatchIndex(clientID, batchIndex)
 	if err := writeAtomically(filePath, data); err != nil {
 		return fmt.Errorf("persist incremental batch %d: %w", batchIndex, err)
 	}
@@ -288,6 +294,7 @@ func (s *FileStateStore) LoadAllIncrementsExcluding(clientID string, excludeBatc
 		batchIndex, err := strconv.Atoi(batchIndexStr)
 		if err != nil {
 			// Can't parse batch index, include it anyway
+			fmt.Printf("warning: can't parse batch index from file %s: %v\n", name, err)
 			filePaths = append(filePaths, filepath.Join(s.roleDir, name))
 			continue
 		}
@@ -314,16 +321,30 @@ func (s *FileStateStore) LoadAllIncrementsExcluding(clientID string, excludeBatc
 		return nil, ErrSnapshotNotFound
 	}
 
-	allData := s.readFilesParallel(filePaths)
+	result := s.readFilesParallel(filePaths)
 
-	return allData, nil
+	if result.readErrors > 0 || result.emptyFiles > 0 {
+		fmt.Printf("warning: client %s had file read issues: read_errors=%d empty_files=%d successfully_read=%d total_attempted=%d\n",
+			clientID, result.readErrors, result.emptyFiles, len(result.data), result.totalFiles)
+	}
+
+	return result.data, nil
+}
+
+// readFilesParallelResult holds the data and statistics from parallel file reads
+type readFilesParallelResult struct {
+	data       [][]byte
+	readErrors int
+	emptyFiles int
+	totalFiles int
 }
 
 // readFilesParallel reads multiple files with limited concurrency using a semaphore pattern.
-func (s *FileStateStore) readFilesParallel(filePaths []string) [][]byte {
+// Returns the data along with statistics about failed reads.
+func (s *FileStateStore) readFilesParallel(filePaths []string) readFilesParallelResult {
 	numFiles := len(filePaths)
 	if numFiles == 0 {
-		return nil
+		return readFilesParallelResult{}
 	}
 
 	// Semaphore: buffered channel limits concurrent disk reads
@@ -353,15 +374,29 @@ func (s *FileStateStore) readFilesParallel(filePaths []string) [][]byte {
 		close(resultsCh)
 	}()
 
-	// Collect results
+	// Collect results and track failures
 	allData := make([][]byte, 0, numFiles)
+	readErrors := 0
+	emptyFiles := 0
+
 	for result := range resultsCh {
-		if result.err == nil && len(result.data) > 0 {
-			allData = append(allData, result.data)
+		if result.err != nil {
+			readErrors++
+			continue
 		}
+		if len(result.data) == 0 {
+			emptyFiles++
+			continue
+		}
+		allData = append(allData, result.data)
 	}
 
-	return allData
+	return readFilesParallelResult{
+		data:       allData,
+		readErrors: readErrors,
+		emptyFiles: emptyFiles,
+		totalFiles: numFiles,
+	}
 }
 
 // DeleteAllIncrements removes all incremental files for a client
@@ -397,9 +432,9 @@ func (s *FileStateStore) DeleteAllIncrements(clientID string) error {
 	return nil
 }
 
-// incrementalPath returns the path for an incremental file
+// getPathForClientAndBatchIndex returns the path for an incremental file
 // Format: data_<clientID>_<batchIndex>.bin
-func (s *FileStateStore) incrementalPath(clientID string, batchIndex int) string {
+func (s *FileStateStore) getPathForClientAndBatchIndex(clientID string, batchIndex int) string {
 	filename := fmt.Sprintf("data_%s_%d.bin", clientID, batchIndex)
 	return filepath.Join(s.roleDir, filename)
 }

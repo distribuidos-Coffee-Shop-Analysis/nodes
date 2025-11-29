@@ -51,8 +51,9 @@ type Pipeline struct {
 	processors []*Processor
 
 	// Lifecycle management
-	shutdownCh chan struct{}
-	wg         sync.WaitGroup
+	shutdownCh   chan struct{}
+	shutdownOnce sync.Once
+	wg           sync.WaitGroup
 
 	// Connection
 	connection *amqp.Connection
@@ -132,8 +133,9 @@ func (p *Pipeline) Start(queueName string, processorFunc ProcessorFunc) error {
 func (p *Pipeline) Stop() {
 	log.Println("action: pipeline_stop | status: initiating_shutdown")
 
-	// Signal all components to stop
-	close(p.shutdownCh)
+	p.shutdownOnce.Do(func() {
+		close(p.shutdownCh)
+	})
 
 	log.Println("action: pipeline_stop | status: waiting_for_all_components")
 	p.wg.Wait()

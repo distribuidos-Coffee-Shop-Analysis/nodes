@@ -1,0 +1,21 @@
+# Dockerfile para Chaos Distribuido
+
+FROM python:3.11-slim
+
+LABEL maintainer="chaos-monkey"
+LABEL description="Chaos Monkey for distributed systems testing"
+
+WORKDIR /app
+
+COPY requirements-chaos.txt .
+
+RUN pip install --no-cache-dir -r requirements-chaos.txt
+
+COPY chaos.py .
+COPY docker-compose.yml .
+
+RUN chmod +x chaos.py
+
+ENTRYPOINT ["python", "chaos.py"]
+
+CMD ["--compose", "docker-compose.yml", "--exclude", "chaos-monkey"]

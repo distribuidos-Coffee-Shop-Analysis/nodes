@@ -421,6 +421,29 @@ def main():
 
     all_targets = load_compose_services(compose_path)
 
+    # Agregar coordinadores hardcodeados (no están en compose)
+    hardcoded_coordinators = [
+        {
+            "service": "coordinator-1",
+            "container_name": "coordinator-1",
+            "role": "coordinator",
+            "node_id": "1",
+        },
+        {
+            "service": "coordinator-2",
+            "container_name": "coordinator-2",
+            "role": "coordinator",
+            "node_id": "2",
+        },
+        {
+            "service": "coordinator-3",
+            "container_name": "coordinator-3",
+            "role": "coordinator",
+            "node_id": "3",
+        },
+    ]
+    all_targets.extend(hardcoded_coordinators)
+
     # Aplicar filtros
     include_re = compile_patterns(args.include)
     exclude_re = compile_patterns(args.exclude)
@@ -517,25 +540,13 @@ def main():
                 action=action,
             )
 
-            if args.dry_run:
-                log_event("dry_run", container=cname, would_do=action)
-            else:
-                # # Ejecutar acción
-                # if graceful:
-                #     ok = stop_graceful(container, args.graceful_timeout)
-                # else:
-                #     ok = stop_abrupt(container)
-                ok = stop_abrupt(container)
+            ok = stop_abrupt(container)
 
-                log_event("inject_done", container=cname, action=action, success=ok)
+            log_event("inject_done", container=cname, action=action, success=ok)
 
-                # # Restart opcional
-                if ok and args.restart_after > 0:
-                    log_event(
-                        "waiting_restart", container=cname, seconds=args.restart_after
-                    )
-                    time.sleep(args.restart_after)
-                    restart_container(container, cli)
+            if ok and args.restart_after > 0:
+                log_event("waiting", container=cname, seconds=args.restart_after)
+                time.sleep(args.restart_after)
 
             injected += 1
 

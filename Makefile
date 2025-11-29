@@ -78,9 +78,9 @@ chaos-logs:
 	docker logs -f $(CHAOS_CONTAINER_NAME)
 .PHONY: chaos-logs
 
-# Chaos enfocado en nodos stateful (Aggregates y Joiners)
+# Chaos enfocado en nodos stateful (Aggregates, Joiners y Coordinators)
 run-chaos-stateful: build-chaos
-	@echo "Empezando el Chaos Distribuido (nodos stateful solo: aggregates & joiners)..."
+	@echo "Empezando el Chaos Distribuido (nodos stateful solo: aggregates, joiners & coordinators)..."
 	@docker rm -f $(CHAOS_CONTAINER_NAME) 2>/dev/null || true
 	docker run -d \
 		--name $(CHAOS_CONTAINER_NAME) \
@@ -89,7 +89,7 @@ run-chaos-stateful: build-chaos
 		-v $(PWD)/docker-compose.yml:/app/docker-compose.yml:ro \
 		$(CHAOS_IMAGE_NAME) \
 		--compose docker-compose.yml \
-		--include "aggregate|joiner" \
+		--include "aggregate|joiner|coordinator" \
 		--exclude "$(CHAOS_CONTAINER_NAME)" \
 		$(CHAOS_ARGS)
 	@echo "Chaos Distribuido (nodos stateful) empezado. Para ver logs: make chaos-logs"

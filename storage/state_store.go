@@ -31,7 +31,7 @@ type StateStore interface {
 	// Incremental persistence - files named by batchIndex for uniqueness
 	// File format: data_<clientID>_<batchIndex>.bin
 	PersistIncremental(clientID string, batchIndex int, data []byte) error
-	LoadAllIncrementsExcluding(clientID string, excludeBatchIndices map[int]bool) ([][]byte, error)
+	LoadAllIncrements(clientID string) (map[int][]byte, error)
 	DeleteAllIncrements(clientID string) error
 	LoadBatchIndicesFromIncrements(clientID string) (map[int]bool, error)
 
@@ -257,13 +257,21 @@ func (s *FileStateStore) PersistIncremental(clientID string, batchIndex int, dat
 
 // fileReadResult holds the result of reading a single file
 type fileReadResult struct {
-	data []byte
-	err  error
+	batchIndex int
+	data       []byte
+	err        error
 }
 
-// LoadAllIncrementsExcluding loads incremental files for a client, skipping files
-// whose batchIndex is in excludeBatchIndices. This avoids reading files already cached in memory.
-func (s *FileStateStore) LoadAllIncrementsExcluding(clientID string, excludeBatchIndices map[int]bool) ([][]byte, error) {
+// fileInfo holds file path and its associated batch index
+type fileInfo struct {
+	path       string
+	batchIndex int
+}
+
+// LoadAllIncrements loads all incremental files for a client and returns them as a map
+// where the key is the batchIndex extracted from the filename.
+// This preserves the association between batch index and data, even for empty batches.
+func (s *FileStateStore) LoadAllIncrements(clientID string) (map[int][]byte, error) {
 	lock := s.getLock(clientID)
 	lock.mu.RLock()
 	defer lock.mu.RUnlock()
@@ -276,9 +284,8 @@ func (s *FileStateStore) LoadAllIncrementsExcluding(clientID string, excludeBatc
 		return nil, ErrSnapshotNotFound
 	}
 
-	// Collect file paths to read, excluding cached batch indices
-	var filePaths []string
-	skippedCount := 0
+	var filesToRead []fileInfo
+
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -293,35 +300,21 @@ func (s *FileStateStore) LoadAllIncrementsExcluding(clientID string, excludeBatc
 		batchIndexStr := name[len(prefix) : len(name)-len(suffix)]
 		batchIndex, err := strconv.Atoi(batchIndexStr)
 		if err != nil {
-			// Can't parse batch index, include it anyway
 			fmt.Printf("warning: can't parse batch index from file %s: %v\n", name, err)
-			filePaths = append(filePaths, filepath.Join(s.roleDir, name))
 			continue
 		}
 
-		// Skip if this batch is already cached in memory
-		if excludeBatchIndices != nil && excludeBatchIndices[batchIndex] {
-			skippedCount++
-			continue
-		}
-
-		filePaths = append(filePaths, filepath.Join(s.roleDir, name))
+		filesToRead = append(filesToRead, fileInfo{
+			path:       filepath.Join(s.roleDir, name),
+			batchIndex: batchIndex,
+		})
 	}
 
-	if skippedCount > 0 {
-		fmt.Printf("info: skipped %d cached files for client %s (reading %d from disk)\n",
-			skippedCount, clientID, len(filePaths))
-	}
-
-	if len(filePaths) == 0 {
-		if skippedCount > 0 {
-			// All files were cached, return empty (not an error)
-			return nil, nil
-		}
+	if len(filesToRead) == 0 {
 		return nil, ErrSnapshotNotFound
 	}
 
-	result := s.readFilesParallel(filePaths)
+	result := s.readFilesParallelWithIndex(filesToRead)
 
 	if result.readErrors > 0 {
 		fmt.Printf("warning: client %s had file read errors: read_errors=%d successfully_read=%d total_attempted=%d\n",
@@ -338,18 +331,18 @@ func (s *FileStateStore) LoadAllIncrementsExcluding(clientID string, excludeBatc
 
 // readFilesParallelResult holds the data and statistics from parallel file reads
 type readFilesParallelResult struct {
-	data       [][]byte
+	data       map[int][]byte
 	readErrors int
 	emptyFiles int
 	totalFiles int
 }
 
-// readFilesParallel reads multiple files with limited concurrency using a semaphore pattern.
-// Returns the data along with statistics about failed reads.
-func (s *FileStateStore) readFilesParallel(filePaths []string) readFilesParallelResult {
-	numFiles := len(filePaths)
+// readFilesParallelWithIndex reads multiple files with limited concurrency using a semaphore pattern.
+// Returns the data as a map[batchIndex][]byte along with statistics about failed reads.
+func (s *FileStateStore) readFilesParallelWithIndex(files []fileInfo) readFilesParallelResult {
+	numFiles := len(files)
 	if numFiles == 0 {
-		return readFilesParallelResult{}
+		return readFilesParallelResult{data: make(map[int][]byte)}
 	}
 
 	// Semaphore: buffered channel limits concurrent disk reads
@@ -360,17 +353,17 @@ func (s *FileStateStore) readFilesParallel(filePaths []string) readFilesParallel
 
 	var wg sync.WaitGroup
 
-	for _, path := range filePaths {
+	for _, fileInfo := range files {
 		wg.Add(1)
-		go func(filePath string) {
+		go func(filePath string, batchIdx int) {
 			defer wg.Done()
 
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }() // Release when done
 
 			data, err := os.ReadFile(filePath)
-			resultsCh <- fileReadResult{data: data, err: err}
-		}(path)
+			resultsCh <- fileReadResult{batchIndex: batchIdx, data: data, err: err}
+		}(fileInfo.path, fileInfo.batchIndex)
 	}
 
 	// Close results channel after all goroutines complete
@@ -380,7 +373,7 @@ func (s *FileStateStore) readFilesParallel(filePaths []string) readFilesParallel
 	}()
 
 	// Collect results and track failures
-	allData := make([][]byte, 0, numFiles)
+	allData := make(map[int][]byte, numFiles)
 	readErrors := 0
 	emptyFiles := 0
 
@@ -391,10 +384,8 @@ func (s *FileStateStore) readFilesParallel(filePaths []string) readFilesParallel
 		}
 		if len(result.data) == 0 {
 			emptyFiles++
-			allData = append(allData, result.data)
-			continue
 		}
-		allData = append(allData, result.data)
+		allData[result.batchIndex] = result.data
 	}
 
 	return readFilesParallelResult{

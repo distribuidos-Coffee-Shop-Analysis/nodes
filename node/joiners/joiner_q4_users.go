@@ -51,6 +51,10 @@ func (j *Q4UserJoiner) GetCachedBatchIndices() map[int]bool {
 	return result
 }
 
+func (j *Q4UserJoiner) GetCache() map[int][]byte {
+	return j.cachedIncrements
+}
+
 func (j *Q4UserJoiner) Name() string {
 	return "q4_joiner_users"
 }

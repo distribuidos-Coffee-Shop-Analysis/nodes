@@ -23,4 +23,5 @@ type Joiner interface {
 	// CACHE
 	CacheIncrement(batchIndex int, data []byte)
 	GetCachedBatchIndices() map[int]bool
+	GetCache() map[int][]byte
 }

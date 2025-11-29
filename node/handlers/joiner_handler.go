@@ -254,16 +254,33 @@ func (h *JoinerHandler) performJoinAndPublish(state *JoinerClientState, batchMes
 
 	var allIncrements [][]byte
 	if h.StateStore() != nil {
-		var err error
-		// Get cached batch indices to skip reading those files from disk
-		excludeIndices := state.joiner.GetCachedBatchIndices()
-
-		allIncrements, err = h.StateStore().LoadAllIncrementsExcluding(clientID, excludeIndices)
+		diskBatches, err := h.StateStore().LoadAllIncrements(clientID)
 		if err != nil && !errors.Is(err, storage.ErrSnapshotNotFound) {
 			log.Printf("action: joiner_load_increments | client_id: %s | joiner: %s | result: fail | error: %v",
 				clientID, state.joiner.Name(), err)
-			allIncrements = nil
+			diskBatches = make(map[int][]byte)
 		}
+
+		cachedBatches := state.joiner.GetCache()
+
+		// Merge
+		allIncrements = make([][]byte, 0, len(diskBatches)+len(cachedBatches))
+		addedIndices := make(map[int]bool)
+
+		for idx, data := range diskBatches {
+			allIncrements = append(allIncrements, data)
+			addedIndices[idx] = true
+		}
+
+		for idx, data := range cachedBatches {
+			if !addedIndices[idx] {
+				allIncrements = append(allIncrements, data)
+			}
+		}
+
+		log.Printf("action: joiner_load_increments | client_id: %s | joiner: %s | "+
+			"from_disk: %d | from_cache: %d | total: %d | result: success",
+			clientID, state.joiner.Name(), len(diskBatches), len(cachedBatches)-len(diskBatches), len(allIncrements))
 	}
 
 	joinedRecords, err := state.joiner.PerformJoin(batchMessage.Records, clientID, allIncrements)
@@ -360,13 +377,25 @@ func (h *JoinerHandler) processBufferedBatch(state *JoinerClientState, batchMess
 
 	var allIncrements [][]byte
 	if h.StateStore() != nil {
-		var err error
-		// Get cached batch indices to skip reading those files from disk
-		excludeIndices := state.joiner.GetCachedBatchIndices()
-
-		allIncrements, err = h.StateStore().LoadAllIncrementsExcluding(clientID, excludeIndices)
+		diskBatches, err := h.StateStore().LoadAllIncrements(clientID)
 		if err != nil && !errors.Is(err, storage.ErrSnapshotNotFound) {
-			allIncrements = nil
+			diskBatches = make(map[int][]byte)
+		}
+
+		cachedBatches := state.joiner.GetCache()
+
+		allIncrements = make([][]byte, 0, len(diskBatches)+len(cachedBatches))
+		addedIndices := make(map[int]bool)
+
+		for idx, data := range diskBatches {
+			allIncrements = append(allIncrements, data)
+			addedIndices[idx] = true
+		}
+
+		for idx, data := range cachedBatches {
+			if !addedIndices[idx] {
+				allIncrements = append(allIncrements, data)
+			}
 		}
 	}
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/middleware"
@@ -275,58 +276,83 @@ func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClien
 
 	h.persistMetadata(clientID, state)
 
+	// merge disk and cache to build deterministic ordered list
 	var allIncrements [][]byte
 	if h.StateStore() != nil {
-		var err error
-		expectedTotal := totalBatchesProcessed
+		expectedTotal := state.expectedTotalBatches
+		cachedBatches := state.aggregate.GetCache()
 
-		// Get cached batch indices to skip reading those files from disk
-		excludeIndices := state.aggregate.GetCachedBatchIndices()
+		const maxRetries = 15
+		const retryBackoff = 3 * time.Second
+		var missingIndices []int
 
-		allIncrements, err = h.StateStore().LoadAllIncrementsExcluding(clientID, excludeIndices)
-		if err != nil && !errors.Is(err, storage.ErrSnapshotNotFound) {
-			log.Printf("action: aggregate_load_increments | client_id: %s | aggregate: %s | result: fail | error: %v",
-				clientID, state.aggregate.Name(), err)
-			allIncrements = nil
-		} else if len(allIncrements) > 0 || len(excludeIndices) > 0 {
-			log.Printf("action: aggregate_load_increments | client_id: %s | aggregate: %s | "+
-				"from_disk: %d | cached: %d | result: success",
-				clientID, state.aggregate.Name(), len(allIncrements), len(excludeIndices))
-		}
-
-		// Verify that the total matches expected
-		totalAvailable := len(allIncrements) + len(excludeIndices)
-		if totalAvailable < expectedTotal {
-			log.Printf("action: aggregate_batch_count_mismatch | client_id: %s | aggregate: %s | "+
-				"expected: %d | available: %d | from_disk: %d | cached: %d | missing: %d | "+
-				"recovery: clearing_cache_and_reloading_all_from_disk",
-				clientID, state.aggregate.Name(), expectedTotal, totalAvailable,
-				len(allIncrements), len(excludeIndices), expectedTotal-totalAvailable)
-
-			state.aggregate.ClearCache()
-
-			allIncrements, err = h.StateStore().LoadAllIncrementsExcluding(clientID, nil)
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			// Load all batches from disk == map[batchIndex]data
+			diskBatches, err := h.StateStore().LoadAllIncrements(clientID)
 			if err != nil && !errors.Is(err, storage.ErrSnapshotNotFound) {
-				log.Printf("action: aggregate_reload_all | client_id: %s | aggregate: %s | result: fail | error: %v",
-					clientID, state.aggregate.Name(), err)
-			} else {
-				log.Printf("action: aggregate_reload_all | client_id: %s | aggregate: %s | "+
-					"from_disk: %d | result: success",
-					clientID, state.aggregate.Name(), len(allIncrements))
+				log.Printf("action: aggregate_load_increments | client_id: %s | aggregate: %s | attempt: %d | result: fail | error: %v",
+					clientID, state.aggregate.Name(), attempt+1, err)
+				diskBatches = make(map[int][]byte)
+			}
 
-				if len(allIncrements) < expectedTotal {
-					stillMissing := expectedTotal - len(allIncrements)
-					log.Printf("action: aggregate_batches_unrecoverable | client_id: %s | aggregate: %s | "+
-						"expected: %d | recovered_from_disk: %d | permanently_lost: %d | "+
-						"reason: batches_were_acked_but_not_persisted_before_crash",
-						clientID, state.aggregate.Name(), expectedTotal, len(allIncrements), stillMissing)
+			if attempt == 0 {
+				log.Printf("action: aggregate_reconciliation_start | client_id: %s | aggregate: %s | "+
+					"expected_total: %d | disk_batches: %d | cached_batches: %d",
+					clientID, state.aggregate.Name(), expectedTotal, len(diskBatches), len(cachedBatches))
+			}
+
+			allIncrements = make([][]byte, 0, expectedTotal)
+			missingIndices = nil
+			fromDisk := 0
+			fromCache := 0
+			emptyBatches := 0
+
+			for i := 0; i < expectedTotal; i++ {
+				// disk first, then cache
+				if data, existsInDisk := diskBatches[i]; existsInDisk {
+					allIncrements = append(allIncrements, data)
+					fromDisk++
+					if len(data) == 0 {
+						emptyBatches++
+					}
+				} else if data, existsInCache := cachedBatches[i]; existsInCache {
+					allIncrements = append(allIncrements, data)
+					fromCache++
+					if len(data) == 0 {
+						emptyBatches++
+					}
+				} else {
+					// Batch missing from both disk and cache
+					missingIndices = append(missingIndices, i)
+					allIncrements = append(allIncrements, nil) // Placeholder to maintain ordering
 				}
 			}
-		} else if totalAvailable > expectedTotal {
-			log.Printf("action: aggregate_batch_count_excess | client_id: %s | aggregate: %s | "+
-				"expected: %d | available: %d | from_disk: %d | cached: %d | excess: %d",
-				clientID, state.aggregate.Name(), expectedTotal, totalAvailable,
-				len(allIncrements), len(excludeIndices), totalAvailable-expectedTotal)
+
+			// Check if reconciliation succeeded
+			if len(missingIndices) == 0 {
+				log.Printf("action: aggregate_reconciliation_success | client_id: %s | aggregate: %s | "+
+					"attempt: %d | total_batches: %d | from_disk: %d | from_cache: %d | empty_batches: %d",
+					clientID, state.aggregate.Name(), attempt+1, len(allIncrements), fromDisk, fromCache, emptyBatches)
+				break
+			}
+
+			// Reconciliation failed - retry if attempts remain
+			if attempt < maxRetries-1 {
+				log.Printf("action: aggregate_reconciliation_retry | client_id: %s | aggregate: %s | "+
+					"attempt: %d | missing_batches: %d | missing_indices: %v | "+
+					"reason: os_delay_listing_files | retry_in: %v",
+					clientID, state.aggregate.Name(), attempt+1, len(missingIndices), missingIndices, retryBackoff)
+				time.Sleep(retryBackoff)
+			}
+		}
+
+		if len(missingIndices) > 0 {
+			log.Printf("action: aggregate_reconciliation_error | client_id: %s | aggregate: %s | "+
+				"result: fail | attempts: %d | missing_batches: %d | missing_indices: %v | "+
+				"reason: batches_lost_from_both_disk_and_cache",
+				clientID, state.aggregate.Name(), maxRetries, len(missingIndices), missingIndices)
+			return fmt.Errorf("missing %d batches (indices: %v) after %d attempts - lost from both disk and cache",
+				len(missingIndices), missingIndices, maxRetries)
 		}
 	}
 

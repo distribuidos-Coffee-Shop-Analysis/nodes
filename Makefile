@@ -103,3 +103,8 @@ list-chaos-stateful: build-chaos
 		--include "aggregate|joiner" \
 		--print-targets
 .PHONY: list-chaos-stateful
+
+clean:
+	@rm -rf state/*
+	@echo "State directory cleaned successfully"
+.PHONY: clean

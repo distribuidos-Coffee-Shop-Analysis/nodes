@@ -345,4 +345,8 @@ func (j *Q2Joiner) CacheIncrement(batchIndex int, data []byte) {
 
 func (j *Q2Joiner) GetCachedBatchIndices() map[int]bool {
 	return nil
-}	
+}
+
+func (j *Q2Joiner) GetCache() map[int][]byte {
+	return nil
+}

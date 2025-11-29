@@ -57,6 +57,10 @@ func (a *Q3Aggregate) GetCachedBatchIndices() map[int]bool {
 	return result
 }
 
+func (a *Q3Aggregate) GetCache() map[int][]byte {
+	return a.cachedIncrements
+}
+
 // ClearCache clears the in-memory cache to force using disk data during finalize
 func (a *Q3Aggregate) ClearCache() {
 	a.cachedIncrements = make(map[int][]byte)

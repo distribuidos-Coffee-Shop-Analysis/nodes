@@ -284,4 +284,8 @@ func (j *Q3Joiner) CacheIncrement(batchIndex int, data []byte) {
 
 func (j *Q3Joiner) GetCachedBatchIndices() map[int]bool {
 	return nil
-}	
+}
+
+func (j *Q3Joiner) GetCache() map[int][]byte {
+	return nil
+}

@@ -288,3 +288,7 @@ func (j *Q4StoreJoiner) CacheIncrement(batchIndex int, data []byte) {
 func (j *Q4StoreJoiner) GetCachedBatchIndices() map[int]bool {
 	return nil
 }
+
+func (j *Q4StoreJoiner) GetCache() map[int][]byte {
+	return nil
+}

@@ -16,6 +16,9 @@ func main() {
 	// Initialize logging
 	initializeLog()
 
+	// Start health check server
+	go common.StartHealthServer("12346")
+
 	cfg := common.GetConfig()
 	nodeConfig := cfg.GetNodeConfig()
 

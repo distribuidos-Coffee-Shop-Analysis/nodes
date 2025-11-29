@@ -35,9 +35,5 @@ COPY config.ini .
 # Copy wiring configuration directory
 COPY --from=builder /app/config ./config/
 
-
-# Expose port (if needed for health checks)
-EXPOSE 12345
-
 # Run the binary
 ENTRYPOINT ["./main"]

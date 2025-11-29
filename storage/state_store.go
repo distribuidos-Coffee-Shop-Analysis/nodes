@@ -236,13 +236,8 @@ func writeAtomically(targetPath string, data []byte) error {
 
 // PersistIncremental saves data to a file named by batchIndex
 // File: data_<clientID>_<batchIndex>.bin - batchIndex ensures uniqueness
+// Even if data is empty, we persist an empty file to mark the batch as processed
 func (s *FileStateStore) PersistIncremental(clientID string, batchIndex int, data []byte) error {
-	if len(data) == 0 {
-		fmt.Printf("warning: PersistIncremental called with empty data | client_id: %s | batch_index: %d | skipping_write\n",
-			clientID, batchIndex)
-		return nil
-	}
-
 	lock := s.getLock(clientID)
 	lock.mu.Lock()
 	defer lock.mu.Unlock()
@@ -250,6 +245,11 @@ func (s *FileStateStore) PersistIncremental(clientID string, batchIndex int, dat
 	filePath := s.getPathForClientAndBatchIndex(clientID, batchIndex)
 	if err := writeAtomically(filePath, data); err != nil {
 		return fmt.Errorf("persist incremental batch %d: %w", batchIndex, err)
+	}
+
+	if len(data) == 0 {
+		fmt.Printf("info: persisted empty batch marker | client_id: %s | batch_index: %d\n",
+			clientID, batchIndex)
 	}
 
 	return nil
@@ -323,9 +323,14 @@ func (s *FileStateStore) LoadAllIncrementsExcluding(clientID string, excludeBatc
 
 	result := s.readFilesParallel(filePaths)
 
-	if result.readErrors > 0 || result.emptyFiles > 0 {
-		fmt.Printf("warning: client %s had file read issues: read_errors=%d empty_files=%d successfully_read=%d total_attempted=%d\n",
-			clientID, result.readErrors, result.emptyFiles, len(result.data), result.totalFiles)
+	if result.readErrors > 0 {
+		fmt.Printf("warning: client %s had file read errors: read_errors=%d successfully_read=%d total_attempted=%d\n",
+			clientID, result.readErrors, len(result.data), result.totalFiles)
+	}
+
+	if result.emptyFiles > 0 {
+		fmt.Printf("info: client %s loaded %d empty batch markers (processed batches with no data)\n",
+			clientID, result.emptyFiles)
 	}
 
 	return result.data, nil
@@ -386,6 +391,7 @@ func (s *FileStateStore) readFilesParallel(filePaths []string) readFilesParallel
 		}
 		if len(result.data) == 0 {
 			emptyFiles++
+			allData = append(allData, result.data)
 			continue
 		}
 		allData = append(allData, result.data)

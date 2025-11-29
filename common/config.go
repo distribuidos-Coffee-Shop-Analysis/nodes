@@ -26,6 +26,7 @@ type FilterConfig struct {
 	TransactionItemsExchange string
 }
 
+
 // Config represents the configuration manager for the filter node
 type Config struct {
 	configPath string
@@ -197,6 +198,9 @@ const (
 	RoleJoinerQ3     NodeRole = "q3_join"
 	RoleJoinerQ4U    NodeRole = "q4_join_users"
 	RoleJoinerQ4S    NodeRole = "q4_join_stores"
+	RolePartialAggregatorQ2 NodeRole = "partial_agg_q2"
+	RolePartialAggregatorQ3 NodeRole = "partial_agg_q3"
+	RolePartialAggregatorQ4 NodeRole = "partial_agg_q4"
 )
 
 type Binding struct {

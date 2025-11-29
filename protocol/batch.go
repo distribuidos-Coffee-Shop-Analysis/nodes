@@ -69,6 +69,8 @@ func NewQ2AggregateBatch(batchIndex int, records []Record, clientID string,	eof 
 	}
 }
 
+
+
 // NewQ3GroupByBatch creates a batch message specifically for Q3 grouped data
 func NewQ3GroupByBatch(batchIndex int, records []Record, eof bool) *BatchMessage {
 	return &BatchMessage{

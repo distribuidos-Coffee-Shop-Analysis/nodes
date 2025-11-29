@@ -91,6 +91,18 @@ func NewHandler(role common.NodeRole) Handler {
 		return handlers.NewJoinerHandler(func() joiners.Joiner {
 			return joiners.NewQ4StoreJoiner()
 		})
+	case common.RolePartialAggregatorQ2:
+		return handlers.NewPartialAggregateHandler(func() aggregates.Aggregate {
+			return aggregates.NewQ2Aggregate()
+		})
+	case common.RolePartialAggregatorQ3:
+		return handlers.NewPartialAggregateHandler(func() aggregates.Aggregate {
+			return aggregates.NewQ3Aggregate()
+		})
+	case common.RolePartialAggregatorQ4:
+		return handlers.NewPartialAggregateHandler(func() aggregates.Aggregate {
+			return aggregates.NewQ4Aggregate()
+		})
 	default:
 		panic("unknown role for handler")
 	}

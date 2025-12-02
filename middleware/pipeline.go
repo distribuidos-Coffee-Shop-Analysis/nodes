@@ -8,54 +8,34 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// PipelineConfig holds configuration for the pipeline architecture
+// PipelineConfig holds configuration for the pipeline.
 type PipelineConfig struct {
-	// RabbitMQ consumer settings
-	NumConsumers     int // Number of RabbitMQ consumer goroutines (recommended: 20-50)
-	ConsumerPrefetch int // Prefetch count per consumer (recommended: 50-100)
+	NumConsumers     int // Number of RabbitMQ consumer goroutines
+	ConsumerPrefetch int // Prefetch count per consumer
 
-	// Processing settings
-	NumProcessors int // Number of processing goroutines (can be high: 1000-5000)
-
-	// Buffer sizes
+	NumProcessors int // Number of processing goroutines
 	InputBufferSize int // Size of the consumer->processor channel buffer
 }
 
-// DefaultPipelineConfig returns sensible defaults for the pipeline
-func DefaultPipelineConfig() PipelineConfig {
-	return PipelineConfig{
-		NumConsumers:     20,
-		ConsumerPrefetch: 50,
-		NumProcessors:    1000,
-		InputBufferSize:  1000,
-	}
-}
-
-// MessagePacket wraps a batch message with its delivery for ACK tracking
-// This travels through the pipeline from consumer -> processor
+// MessagePacket wraps a batch message with its delivery for ACK tracking.
 type MessagePacket struct {
 	Batch    *protocol.BatchMessage
 	Delivery amqp.Delivery
 }
 
-// Pipeline orchestrates the consumer -> processor flow
-// Handlers are responsible for their own publishing and ACK/NACK
+// Pipeline orchestrates the consumer -> processor flow.
 type Pipeline struct {
 	config PipelineConfig
 
-	// Channel for inter-stage communication
 	inputChan chan MessagePacket // Consumer -> Processor
 
-	// Components
 	consumers  []*Consumer
 	processors []*Processor
 
-	// Lifecycle management
 	shutdownCh   chan struct{}
 	shutdownOnce sync.Once
 	wg           sync.WaitGroup
 
-	// Connection
 	connection *amqp.Connection
 }
 
@@ -97,7 +77,7 @@ func (p *Pipeline) Start(queueName string, processorFunc ProcessorFunc) error {
 		}
 	}()
 
-	// Start processors first (they need to be ready to receive from inputChan)
+	// Start processors
 	for i := 0; i < p.config.NumProcessors; i++ {
 		proc := NewProcessor(i, p.inputChan, processorFunc, p.shutdownCh)
 		p.processors = append(p.processors, proc)
@@ -109,7 +89,7 @@ func (p *Pipeline) Start(queueName string, processorFunc ProcessorFunc) error {
 	}
 	log.Printf("action: pipeline_processors_started | count: %d", len(p.processors))
 
-	// Start consumers (they will start producing to inputChan)
+	// Start consumers
 	for i := 0; i < p.config.NumConsumers; i++ {
 		consumer, err := NewConsumer(i, queueName, p.connection, p.inputChan, p.config.ConsumerPrefetch, p.shutdownCh)
 		if err != nil {

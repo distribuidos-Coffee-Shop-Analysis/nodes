@@ -13,7 +13,6 @@ import (
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
-// Q4UserRawRecord is a lightweight representation of user data for joins
 type Q4UserRawRecord struct {
 	UserID    string
 	Birthdate string
@@ -23,7 +22,6 @@ type Q4UserJoiner struct {
 	rawReferenceRecords []Q4UserRawRecord
 	clientID            string
 
-	// In-memory cache of serialized increments to avoid disk reads for already-processed batches
 	cachedIncrements map[int][]byte
 }
 
@@ -34,7 +32,6 @@ func NewQ4UserJoiner() *Q4UserJoiner {
 	}
 }
 
-// CacheIncrement stores a serialized increment in memory to avoid disk reads during join
 func (j *Q4UserJoiner) CacheIncrement(batchIndex int, data []byte) {
 	if j.cachedIncrements == nil {
 		j.cachedIncrements = make(map[int][]byte)
@@ -42,7 +39,6 @@ func (j *Q4UserJoiner) CacheIncrement(batchIndex int, data []byte) {
 	j.cachedIncrements[batchIndex] = data
 }
 
-// GetCachedBatchIndices returns the set of batch indices currently in memory cache
 func (j *Q4UserJoiner) GetCachedBatchIndices() map[int]bool {
 	result := make(map[int]bool, len(j.cachedIncrements))
 	for idx := range j.cachedIncrements {
@@ -59,7 +55,6 @@ func (j *Q4UserJoiner) Name() string {
 	return "q4_joiner_users"
 }
 
-// SerializeReferenceRecords directly serializes reference records
 func (j *Q4UserJoiner) SerializeReferenceRecords(records []protocol.Record, batchIndex int) ([]byte, error) {
 	if len(records) == 0 {
 		return nil, nil
@@ -89,7 +84,6 @@ func (j *Q4UserJoiner) SerializeReferenceRecords(records []protocol.Record, batc
 	return buf.Bytes(), nil
 }
 
-// SerializeBufferedBatch directly serializes a buffered batch
 func (j *Q4UserJoiner) SerializeBufferedBatch(batch *protocol.BatchMessage) ([]byte, error) {
 	if batch == nil || len(batch.Records) == 0 {
 		return nil, nil
@@ -119,7 +113,7 @@ func (j *Q4UserJoiner) SerializeBufferedBatch(batch *protocol.BatchMessage) ([]b
 	return buf.Bytes(), nil
 }
 
-// RestoreBufferedBatches restores buffered batches from disk
+// RestoreBufferedBatches restores batches from disk
 func (j *Q4UserJoiner) RestoreBufferedBatches(data []byte) ([]protocol.BatchMessage, error) {
 	if len(data) == 0 {
 		return nil, nil
@@ -185,52 +179,18 @@ func (j *Q4UserJoiner) RestoreBufferedBatches(data []byte) ([]protocol.BatchMess
 	return batches, nil
 }
 
-// restoreState restores reference data from a serialized increment
-func (j *Q4UserJoiner) restoreState(data []byte) error {
-	if len(data) == 0 {
-		return nil
-	}
-
-	if j.rawReferenceRecords == nil {
-		j.rawReferenceRecords = make([]Q4UserRawRecord, 0)
-	}
-
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if len(line) == 0 || !strings.HasPrefix(line, "R|") {
-			continue
-		}
-
-		parts := strings.Split(line[2:], "|")
-		if len(parts) != 2 {
-			continue
-		}
-
-		j.rawReferenceRecords = append(j.rawReferenceRecords, Q4UserRawRecord{
-			UserID:    parts[0],
-			Birthdate: parts[1],
-		})
-	}
-
-	return scanner.Err()
-}
-
-// PerformJoin merges cached + disk increments for reference data, then joins with aggregated records.
-// Cached increments (from current session) are used first, disk is only read for missing batches (post-crash recovery).
+// PerformJoin merges cached + disk batches for reference data, then joins with aggregated records.
 func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record, clientId string, historicalIncrements [][]byte) ([]protocol.Record, error) {
 	if j.clientID == "" {
 		j.clientID = clientId
 	}
 
-	// Collect all increments: cached first, then disk (for recovery)
 	var validIncrements [][]byte
 	seenBatches := make(map[int]bool)
 	cachedUsed := 0
 	diskUsed := 0
 
-	// Phase 1a: Use cached increments first (already in memory, no disk read needed)
+	// 1. Use cached batches first
 	for batchIdx, data := range j.cachedIncrements {
 		if len(data) == 0 {
 			continue
@@ -240,7 +200,7 @@ func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record, clientId
 		cachedUsed++
 	}
 
-	// Phase 1b: Add disk increments only for batches not in cache (recovery scenario)
+	// 2. Add disk batches only for batches not in cache
 	for _, incrementData := range historicalIncrements {
 		if len(incrementData) == 0 {
 			continue
@@ -252,7 +212,7 @@ func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record, clientId
 		}
 
 		if seenBatches[batchIdx] {
-			continue // Already have this batch from cache
+			continue
 		}
 		seenBatches[batchIdx] = true
 		validIncrements = append(validIncrements, incrementData)
@@ -262,7 +222,7 @@ func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record, clientId
 	log.Printf("action: q4_user_joiner_load_start | client_id: %s | cached: %d | from_disk: %d",
 		clientId, cachedUsed, diskUsed)
 
-	// Merge valid increments
+	// 3. Merge
 	if len(validIncrements) > 0 {
 		j.mergeIncrements(validIncrements)
 	}
@@ -308,7 +268,7 @@ func (j *Q4UserJoiner) PerformJoin(aggregatedRecords []protocol.Record, clientId
 	return joinedRecords, nil
 }
 
-// parseBatchIndexFromQ4UserIncrement extracts the batch index from the header of an increment
+// parseBatchIndexFromQ4UserIncrement extracts the batch index from the header of a file
 func parseBatchIndexFromQ4UserIncrement(data []byte) int {
 	if len(data) == 0 {
 		return -1
@@ -333,11 +293,10 @@ func parseBatchIndexFromQ4UserIncrement(data []byte) int {
 	return batchIndex
 }
 
-// mergeIncrements processes increments using the common worker pool
 func (j *Q4UserJoiner) mergeIncrements(increments [][]byte) {
 	worker.ProcessAndMerge(
 		increments,
-		0, // Use default workers
+		0,
 		parseQ4UserIncrement,
 		func(results [][]Q4UserRawRecord) {
 			for _, records := range results {
@@ -347,7 +306,7 @@ func (j *Q4UserJoiner) mergeIncrements(increments [][]byte) {
 	)
 }
 
-// parseQ4UserIncrement parses a single increment into Q4UserRawRecord slice
+// parseQ4UserIncrement parses a single file into Q4UserRawRecord slice
 func parseQ4UserIncrement(data []byte) []Q4UserRawRecord {
 	if len(data) == 0 {
 		return nil

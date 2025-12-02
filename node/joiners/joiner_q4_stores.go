@@ -167,7 +167,7 @@ func (j *Q4StoreJoiner) RestoreBufferedBatches(data []byte) ([]protocol.BatchMes
 	return batches, nil
 }
 
-// restoreState restores reference data from a serialized increment
+// restoreState restores reference data from a serialized file
 func (j *Q4StoreJoiner) restoreState(data []byte) error {
 	if len(data) == 0 {
 		return nil

@@ -206,7 +206,7 @@ func (j *Q2Joiner) RestoreBufferedBatches(data []byte) ([]protocol.BatchMessage,
 	return batches, nil
 }
 
-// restoreState restores reference data from a serialized increment (used during join)
+// restoreState restores reference data from a serialized file
 func (j *Q2Joiner) restoreState(data []byte) error {
 	if len(data) == 0 {
 		return nil

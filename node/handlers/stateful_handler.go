@@ -8,12 +8,12 @@ import (
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/storage"
 )
 
-// StatefulHandlerBase provides common functionality for stateful handlers (Aggregate, Joiner)
+// StatefulHandlerBase provides common functionality for stateful handlers: Aggregate, Joiner
 type StatefulHandlerBase struct {
 	stateStore storage.StateStore
 }
 
-// InitStateStore initializes the state store for the handler
+// InitStateStore initializes the state store
 func (h *StatefulHandlerBase) InitStateStore(role common.NodeRole) {
 	if h.stateStore != nil {
 		return
@@ -33,7 +33,7 @@ func (h *StatefulHandlerBase) InitStateStore(role common.NodeRole) {
 	h.stateStore = store
 }
 
-// StateStore returns the state store (for use by embedding handlers)
+// StateStore returns the state store
 func (h *StatefulHandlerBase) StateStore() storage.StateStore {
 	return h.stateStore
 }
@@ -52,7 +52,7 @@ func (h *StatefulHandlerBase) ScanExistingClients() []string {
 	return store.ListClients()
 }
 
-// LoadBatchIndices loads batch indices from incremental file headers
+// LoadBatchIndices loads batch indices from file headers
 func (h *StatefulHandlerBase) LoadBatchIndices(clientID string) (map[int]bool, error) {
 	if h.stateStore == nil {
 		return make(map[int]bool), nil

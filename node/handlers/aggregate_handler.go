@@ -19,12 +19,12 @@ import (
 
 // AggregateClientState holds per-client state for aggregate operations
 type AggregateClientState struct {
-	mu sync.Mutex // Single lock for all state operations
+	mu sync.Mutex // lock for all state operations
 
 	aggregate            aggregates.Aggregate
 	eofReceived          bool
 	expectedTotalBatches int
-	seenBatchIndices     map[int]bool // Batch indices that have been PERSISTED
+	seenBatchIndices     map[int]bool // Batch indices that have been persisted
 	finalizeStarted      bool         // Set when finalize begins
 	finalizeCompleted    bool         // Set after successful publish
 }
@@ -62,7 +62,6 @@ func (h *AggregateHandler) Name() string {
 	return "aggregate_" + h.sampleName()
 }
 
-// sampleName instantiates a temporary aggregate just to read its name
 func (h *AggregateHandler) sampleName() string {
 	return h.newAggregate().Name()
 }
@@ -76,16 +75,13 @@ func (h *AggregateHandler) getState(clientID string) *AggregateClientState {
 	}
 	h.statesMu.RUnlock()
 
-	// Need to create new state - acquire write lock
 	h.statesMu.Lock()
 	defer h.statesMu.Unlock()
 
-	// Double-check after acquiring write lock
 	if state, ok := h.states[clientID]; ok {
 		return state
 	}
 
-	// Create new state for this client
 	st := &AggregateClientState{
 		aggregate:            h.newAggregate(),
 		seenBatchIndices:     make(map[int]bool),
@@ -166,8 +162,7 @@ func (h *AggregateHandler) checkPendingFinalizes() {
 	}
 }
 
-// scanExistingClients returns client IDs that have persisted metadata
-// Handle processes a batch message with a simple linear flow:
+// Handle processes a batch message
 // Lock → Check duplicate → Serialize → Persist → Mark seen → Unlock → ACK
 func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
 	wiring *common.NodeWiring, clientWG *sync.WaitGroup, msg amqp091.Delivery) error {
@@ -199,7 +194,7 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 		return err
 	}
 
-	// 3. Persist data (always persist, even if empty, to maintain batch tracking)
+	// 3. Persist data
 	if err := h.StateStore().PersistIncremental(clientID, batchMessage.BatchIndex, data); err != nil {
 		state.mu.Unlock()
 		log.Printf("action: aggregate_persist_data | client_id: %s | aggregate: %s | result: fail | error: %v",
@@ -263,7 +258,8 @@ func (h *AggregateHandler) Handle(batchMessage *protocol.BatchMessage, connectio
 	return nil
 }
 
-// finalizeClient performs the complete finalization process for a client
+// finalizeClient performs the finalization process for a client
+// Hay veces en las cuales se llega al finalizeClient (osea que estamos seguro que recibimos todas las batches y que estas estan persistidas en disco) pero que cuando se checkean las batches persistidas en disco faltan algunas. Esto es porque el sistema operativo no es instantaneo y hay un delay entre el momento en que se persiste la batch y el que se lee para ver si esta se encuentra. Es por esto que hay veces en las cuales LoadAllIncrements(clientID) devuelve menos batches de los que se esperan. Esto es una limitacion que el sistema operativo nos impone porque sabemos que en realidad esas batches existen y estan persistidas. Es por esto que implementamos aca un sistema de retries. Pusimos un numero muy alto: `maxRetries = 15`, aunque nunca vimos que llegue a ser necesario mas de 3 retries, pero es simplemente para hacer al sistema resiliente y asegurarnos de que siempre vamos a dar los resultados correctos.
 func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClientState, batchMessage *protocol.BatchMessage) error {
 	state.mu.Lock()
 	totalBatchesProcessed := len(state.seenBatchIndices)
@@ -276,7 +272,7 @@ func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClien
 
 	h.persistMetadata(clientID, state)
 
-	// merge disk and cache to build deterministic ordered list
+	// merge disk and cache
 	var allIncrements [][]byte
 	if h.StateStore() != nil {
 		expectedTotal := state.expectedTotalBatches
@@ -287,7 +283,7 @@ func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClien
 		var missingIndices []int
 
 		for attempt := 0; attempt < maxRetries; attempt++ {
-			// Load all batches from disk == map[batchIndex]data
+			// load all batches from disk
 			diskBatches, err := h.StateStore().LoadAllIncrements(clientID)
 			if err != nil && !errors.Is(err, storage.ErrSnapshotNotFound) {
 				log.Printf("action: aggregate_load_increments | client_id: %s | aggregate: %s | attempt: %d | result: fail | error: %v",
@@ -308,7 +304,7 @@ func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClien
 			emptyBatches := 0
 
 			for i := 0; i < expectedTotal; i++ {
-				// disk first, then cache
+				// disk first
 				if data, existsInDisk := diskBatches[i]; existsInDisk {
 					allIncrements = append(allIncrements, data)
 					fromDisk++
@@ -322,13 +318,13 @@ func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClien
 						emptyBatches++
 					}
 				} else {
-					// Batch missing from both disk and cache
+					// batch missing from both disk and cache
 					missingIndices = append(missingIndices, i)
 					allIncrements = append(allIncrements, nil) // Placeholder to maintain ordering
 				}
 			}
 
-			// Check if reconciliation succeeded
+			// check if reconciliation succeeded
 			if len(missingIndices) == 0 {
 				log.Printf("action: aggregate_reconciliation_success | client_id: %s | aggregate: %s | "+
 					"attempt: %d | total_batches: %d | from_disk: %d | from_cache: %d | empty_batches: %d",
@@ -336,7 +332,7 @@ func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClien
 				break
 			}
 
-			// Reconciliation failed - retry if attempts remain
+			// reconciliation failed - retry if attempts remain
 			if attempt < maxRetries-1 {
 				log.Printf("action: aggregate_reconciliation_retry | client_id: %s | aggregate: %s | "+
 					"attempt: %d | missing_batches: %d | missing_indices: %v | "+
@@ -464,7 +460,7 @@ func (h *AggregateHandler) restoreClientState(clientID string, state *AggregateC
 		}
 	}
 
-	// Restore batch indices from incremental file headers
+	// Restore batch indices from file headers
 	batchIndices, err := h.StateStore().LoadBatchIndicesFromIncrements(clientID)
 	if err != nil {
 		log.Printf("action: aggregate_restore_batch_indices | client_id: %s | result: fail | error: %v", clientID, err)

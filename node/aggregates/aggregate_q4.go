@@ -14,13 +14,10 @@ import (
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
-// Q4Aggregate handles aggregation of Q4 grouped data
-// State is only used during Finalize to merge all increments
 type Q4Aggregate struct {
-	counts   map[string]int // "storeID|userID" -> count
+	counts   map[string]int
 	clientID string
 
-	// In-memory cache of serialized increments to avoid disk reads for already-processed batches
 	cachedIncrements map[int][]byte
 }
 
@@ -31,7 +28,6 @@ func NewQ4Aggregate() *Q4Aggregate {
 	}
 }
 
-// CacheIncrement stores a serialized increment in memory to avoid disk reads during finalize
 func (q *Q4Aggregate) CacheIncrement(batchIndex int, data []byte) {
 	if q.cachedIncrements == nil {
 		q.cachedIncrements = make(map[int][]byte)
@@ -39,8 +35,6 @@ func (q *Q4Aggregate) CacheIncrement(batchIndex int, data []byte) {
 	q.cachedIncrements[batchIndex] = data
 }
 
-// GetCachedBatchIndices returns the set of batch indices currently in memory cache
-// Only returns indices with non-empty data to avoid excluding batches that would then be skipped
 func (q *Q4Aggregate) GetCachedBatchIndices() map[int]bool {
 	result := make(map[int]bool, len(q.cachedIncrements))
 	for idx, data := range q.cachedIncrements {
@@ -55,7 +49,6 @@ func (q *Q4Aggregate) GetCache() map[int][]byte {
 	return q.cachedIncrements
 }
 
-// ClearCache clears the in-memory cache to force using disk data during finalize
 func (q *Q4Aggregate) ClearCache() {
 	q.cachedIncrements = make(map[int][]byte)
 }
@@ -64,11 +57,8 @@ func (q *Q4Aggregate) Name() string {
 	return "Q4Aggregate"
 }
 
-// SerializeRecords serializes records with batch index as header
 // Format: BATCH|index\n followed by storeID|userID|count\n
-// Always returns at least the header to ensure batch is tracked for crash recovery
 func (q *Q4Aggregate) SerializeRecords(records []protocol.Record, batchIndex int) ([]byte, error) {
-	// Aggregate locally to reduce output size
 	localCounts := make(map[string]int, len(records))
 
 	for _, record := range records {
@@ -105,43 +95,6 @@ func (q *Q4Aggregate) SerializeRecords(records []protocol.Record, batchIndex int
 	}
 
 	return buf.Bytes(), nil
-}
-
-// restoreState restores data from a serialized increment (used during merge)
-func (q *Q4Aggregate) restoreState(data []byte) error {
-	if len(data) == 0 {
-		return nil
-	}
-
-	if q.counts == nil {
-		q.counts = make(map[string]int, 100000)
-	}
-
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if len(line) == 0 {
-			continue
-		}
-
-		parts := strings.Split(line, "|")
-		if len(parts) != 3 {
-			continue
-		}
-
-		storeID := parts[0]
-		userID := parts[1]
-		count, err := strconv.Atoi(parts[2])
-		if err != nil {
-			continue
-		}
-
-		compositeKey := storeID + "|" + userID
-		q.counts[compositeKey] += count
-	}
-
-	return scanner.Err()
 }
 
 func (q *Q4Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
@@ -214,7 +167,6 @@ func (q *Q4Aggregate) Finalize(clientID string) ([]protocol.Record, error) {
 	return results, nil
 }
 
-// parseBatchIndexFromIncrement extracts the batch index from the header of an increment
 func parseBatchIndexFromIncrementQ4(data []byte) int {
 	if len(data) == 0 {
 		return -1
@@ -240,9 +192,7 @@ func parseBatchIndexFromIncrementQ4(data []byte) int {
 }
 
 // GetBatchesToPublish merges cached + disk increments, filters duplicates, and returns final results.
-// Cached increments (from current session) are used first, disk is only read for missing batches (post-crash recovery).
 func (q *Q4Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIndex int, clientID string) ([]BatchToPublish, error) {
-	// Collect all increments: cached first, then disk (for recovery)
 	seenBatches := make(map[int]bool)
 	var validIncrements [][]byte
 	cachedUsed := 0
@@ -252,7 +202,7 @@ func (q *Q4Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 	diskInvalidHeader := 0
 	duplicatesSkipped := 0
 
-	// Phase 1a: Use cached increments first (already in memory, no disk read needed)
+	// 1. Use cached increments
 	for batchIdx, data := range q.cachedIncrements {
 		if len(data) == 0 {
 			cachedEmpty++
@@ -263,7 +213,7 @@ func (q *Q4Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 		cachedUsed++
 	}
 
-	// Phase 1b: Add disk increments only for batches not in cache (recovery scenario)
+	// 2. Add disk increments for batches not in cache
 	for i, incrementData := range historicalIncrements {
 		if len(incrementData) == 0 {
 			diskEmpty++
@@ -290,7 +240,7 @@ func (q *Q4Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 	log.Printf("action: q4_merge_start | client_id: %s | cached: %d | cached_empty: %d | from_disk: %d | disk_empty: %d | disk_invalid_header: %d | duplicates_skipped: %d",
 		clientID, cachedUsed, cachedEmpty, diskUsed, diskEmpty, diskInvalidHeader, duplicatesSkipped)
 
-	// Phase 2: Process valid increments in parallel
+	// 3. Process valid increments in parallel
 	if len(validIncrements) > 0 {
 		q.mergeIncrementsParallel(validIncrements)
 	}
@@ -341,11 +291,10 @@ func (q *Q4Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 	return batchesToPublish, nil
 }
 
-// mergeIncrementsParallel processes increments using the common worker pool
 func (q *Q4Aggregate) mergeIncrementsParallel(increments [][]byte) {
 	worker.ProcessAndMerge(
 		increments,
-		0, // Use default workers
+		0,
 		parseQ4Increment,
 		func(results []map[string]int) {
 			for _, localCounts := range results {
@@ -357,7 +306,6 @@ func (q *Q4Aggregate) mergeIncrementsParallel(increments [][]byte) {
 	)
 }
 
-// parseQ4Increment parses a single increment into a counts map
 func parseQ4Increment(data []byte) map[string]int {
 	localCounts := make(map[string]int)
 

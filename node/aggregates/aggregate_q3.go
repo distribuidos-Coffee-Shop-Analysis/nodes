@@ -12,24 +12,19 @@ import (
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
-// Q3RawRecord stores raw data before aggregation
 type Q3RawRecord struct {
 	YearHalf string
 	StoreID  string
 	TPV      float64
 }
 
-// Q3Aggregate handles aggregation of Q3 grouped data to accumulate TPV by year_half and store
-// State is only used during Finalize to merge all increments
 type Q3Aggregate struct {
 	rawRecords []Q3RawRecord
 	clientID   string
 
-	// In-memory cache of serialized increments to avoid disk reads for already-processed batches
 	cachedIncrements map[int][]byte
 }
 
-// NewQ3Aggregate creates a new Q3 aggregate processor
 func NewQ3Aggregate() *Q3Aggregate {
 	return &Q3Aggregate{
 		rawRecords:       make([]Q3RawRecord, 0),
@@ -37,7 +32,6 @@ func NewQ3Aggregate() *Q3Aggregate {
 	}
 }
 
-// CacheIncrement stores a serialized increment in memory to avoid disk reads during finalize
 func (a *Q3Aggregate) CacheIncrement(batchIndex int, data []byte) {
 	if a.cachedIncrements == nil {
 		a.cachedIncrements = make(map[int][]byte)
@@ -45,8 +39,6 @@ func (a *Q3Aggregate) CacheIncrement(batchIndex int, data []byte) {
 	a.cachedIncrements[batchIndex] = data
 }
 
-// GetCachedBatchIndices returns the set of batch indices currently in memory cache
-// Only returns indices with non-empty data to avoid excluding batches that would then be skipped
 func (a *Q3Aggregate) GetCachedBatchIndices() map[int]bool {
 	result := make(map[int]bool, len(a.cachedIncrements))
 	for idx, data := range a.cachedIncrements {
@@ -61,7 +53,6 @@ func (a *Q3Aggregate) GetCache() map[int][]byte {
 	return a.cachedIncrements
 }
 
-// ClearCache clears the in-memory cache to force using disk data during finalize
 func (a *Q3Aggregate) ClearCache() {
 	a.cachedIncrements = make(map[int][]byte)
 }
@@ -70,9 +61,7 @@ func (a *Q3Aggregate) Name() string {
 	return "q3_aggregate_tpv_by_year_half_store"
 }
 
-// SerializeRecords serializes records with batch index as header
 // Format: BATCH|index\n followed by year_half|store_id|tpv\n
-// Always returns at least the header to ensure batch is tracked for crash recovery
 func (a *Q3Aggregate) SerializeRecords(records []protocol.Record, batchIndex int) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.Grow(len(records)*50 + 20)
@@ -110,48 +99,6 @@ func (a *Q3Aggregate) SerializeRecords(records []protocol.Record, batchIndex int
 	}
 
 	return buf.Bytes(), nil
-}
-
-// restoreState restores data from a serialized increment (used during merge)
-func (a *Q3Aggregate) restoreState(data []byte) error {
-	if len(data) == 0 {
-		return nil
-	}
-
-	if a.rawRecords == nil {
-		a.rawRecords = make([]Q3RawRecord, 0)
-	}
-
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if len(line) == 0 {
-			continue
-		}
-
-		parts := strings.Split(line, "|")
-		if len(parts) != 3 {
-			continue
-		}
-
-		yearHalf := parts[0]
-		storeID := parts[1]
-		tpvValue := parts[2]
-
-		tpv, err := strconv.ParseFloat(tpvValue, 64)
-		if err != nil {
-			continue
-		}
-
-		a.rawRecords = append(a.rawRecords, Q3RawRecord{
-			YearHalf: yearHalf,
-			StoreID:  storeID,
-			TPV:      tpv,
-		})
-	}
-
-	return scanner.Err()
 }
 
 func (a *Q3Aggregate) Finalize(clientId string) ([]protocol.Record, error) {
@@ -193,7 +140,6 @@ func (a *Q3Aggregate) Finalize(clientId string) ([]protocol.Record, error) {
 }
 
 // parseBatchIndexFromIncrement extracts the batch index from the header of an increment
-// Returns -1 if the header is not found or invalid
 func parseBatchIndexFromIncrementQ3(data []byte) int {
 	if len(data) == 0 {
 		return -1
@@ -219,9 +165,7 @@ func parseBatchIndexFromIncrementQ3(data []byte) int {
 }
 
 // GetBatchesToPublish merges cached + disk increments, filters duplicates, and returns final results.
-// Cached increments (from current session) are used first, disk is only read for missing batches (post-crash recovery).
 func (a *Q3Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIndex int, clientID string) ([]BatchToPublish, error) {
-	// Collect all increments: cached first, then disk (for recovery)
 	seenBatches := make(map[int]bool)
 	var validIncrements [][]byte
 	cachedUsed := 0
@@ -231,7 +175,7 @@ func (a *Q3Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 	diskInvalidHeader := 0
 	duplicatesSkipped := 0
 
-	// Phase 1a: Use cached increments first (already in memory, no disk read needed)
+	// 1. Use cached increments
 	for batchIdx, data := range a.cachedIncrements {
 		if len(data) == 0 {
 			cachedEmpty++
@@ -242,7 +186,7 @@ func (a *Q3Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 		cachedUsed++
 	}
 
-	// Phase 1b: Add disk increments only for batches not in cache (recovery scenario)
+	// 2. Add disk increments for batches not in cache
 	for i, incrementData := range historicalIncrements {
 		if len(incrementData) == 0 {
 			diskEmpty++
@@ -269,7 +213,7 @@ func (a *Q3Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 	log.Printf("action: q3_merge_start | client_id: %s | cached: %d | cached_empty: %d | from_disk: %d | disk_empty: %d | disk_invalid_header: %d | duplicates_skipped: %d",
 		clientID, cachedUsed, cachedEmpty, diskUsed, diskEmpty, diskInvalidHeader, duplicatesSkipped)
 
-	// Phase 2: Process valid increments in parallel
+	// 3. Process valid increments in parallel
 	if len(validIncrements) > 0 {
 		a.mergeIncrementsParallel(validIncrements)
 	}
@@ -292,11 +236,10 @@ func (a *Q3Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIn
 	}, nil
 }
 
-// mergeIncrementsParallel processes increments using the common worker pool
 func (a *Q3Aggregate) mergeIncrementsParallel(increments [][]byte) {
 	worker.ProcessAndMerge(
 		increments,
-		0, // Use default workers
+		0,
 		parseQ3Increment,
 		func(results [][]Q3RawRecord) {
 			for _, records := range results {
@@ -306,7 +249,6 @@ func (a *Q3Aggregate) mergeIncrementsParallel(increments [][]byte) {
 	)
 }
 
-// parseQ3Increment parses a single increment into Q3RawRecord slice
 func parseQ3Increment(data []byte) []Q3RawRecord {
 	if len(data) == 0 {
 		return nil

@@ -20,7 +20,7 @@ type JoinerClientState struct {
 	mu                       sync.Mutex
 	joiner                   joiners.Joiner
 	referenceDatasetComplete bool
-	seenBatchIndices         map[int]bool // Batch indices that have been PERSISTED
+	seenBatchIndices         map[int]bool // Batch indices that have been persisted
 	finalizeStarted          bool         // Set when finalize begins
 	finalizeCompleted        bool         // Set after successful publish
 }
@@ -106,7 +106,8 @@ func (h *JoinerHandler) StartHandler(queueManager *middleware.QueueManager, clie
 	return nil
 }
 
-// Handle processes batches - Serialize → Persist → ACK
+// Handle processes batches
+// Serialize → Persist → ACK
 func (h *JoinerHandler) Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
 	wiring *common.NodeWiring, clientWG *sync.WaitGroup, msg amqp091.Delivery) error {
 
@@ -133,7 +134,6 @@ func (h *JoinerHandler) Handle(batchMessage *protocol.BatchMessage, connection *
 	}
 }
 
-// handleReferenceDataset: Serialize → Persist → ACK → (if EOF) process buffered
 func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMessage *protocol.BatchMessage, msg amqp091.Delivery, clientID string) error {
 
 	state.mu.Lock()
@@ -207,7 +207,7 @@ func (h *JoinerHandler) handleReferenceDataset(state *JoinerClientState, batchMe
 	return nil
 }
 
-// handleAggregatedData: either buffer (if reference not ready) or join
+// handleAggregatedData: either store (if reference not ready) or join
 func (h *JoinerHandler) handleAggregatedData(state *JoinerClientState, batchMessage *protocol.BatchMessage, msg amqp091.Delivery, clientID string) error {
 
 	state.mu.Lock()
@@ -215,7 +215,7 @@ func (h *JoinerHandler) handleAggregatedData(state *JoinerClientState, batchMess
 	state.mu.Unlock()
 
 	if !refDataComplete {
-		// Reference data not ready - serialize and persist as buffered
+		// reference data not ready - serialize and persist
 		state.mu.Lock()
 
 		data, err := state.joiner.SerializeBufferedBatch(batchMessage)
@@ -246,7 +246,7 @@ func (h *JoinerHandler) handleAggregatedData(state *JoinerClientState, batchMess
 		return nil
 	}
 
-	// Reference data is complete - perform join
+	// reference data is complete - perform join
 	return h.performJoinAndPublish(state, batchMessage, msg, clientID)
 }
 

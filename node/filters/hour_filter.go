@@ -11,8 +11,8 @@ import (
 
 // HourFilter filters records by hour range (24-hour format)
 type HourFilter struct {
-	MinHour int // e.g., 6 for 6AM
-	MaxHour int // e.g., 23 for 11PM
+	MinHour int
+	MaxHour int
 }
 
 func NewHourFilter(minHour, maxHour int) *HourFilter {

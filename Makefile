@@ -53,7 +53,7 @@ build-chaos:
 run-chaos: build-chaos
 	@echo "Empezando el Chaos Distribuido..."
 	@docker rm -f $(CHAOS_CONTAINER_NAME) 2>/dev/null || true
-	docker run -d \
+	docker run \
 		--name $(CHAOS_CONTAINER_NAME) \
 		--network $(NETWORK_NAME) \
 		-v /var/run/docker.sock:/var/run/docker.sock:ro \
@@ -63,7 +63,6 @@ run-chaos: build-chaos
 		--exclude "$(CHAOS_CONTAINER_NAME)" \
 		--exclude "rabbitmq" \
 		$(CHAOS_ARGS)
-	@echo "Chaos Distribuido empezado. Para ver logs: make chaos-logs"
 .PHONY: run-chaos
 
 # Detiene el chaos monkey
@@ -82,7 +81,7 @@ chaos-logs:
 run-chaos-stateful: build-chaos
 	@echo "Empezando el Chaos Distribuido (nodos stateful solo: aggregates, joiners & coordinators)..."
 	@docker rm -f $(CHAOS_CONTAINER_NAME) 2>/dev/null || true
-	docker run -d \
+	docker run \
 		--name $(CHAOS_CONTAINER_NAME) \
 		--network $(NETWORK_NAME) \
 		-v /var/run/docker.sock:/var/run/docker.sock:ro \

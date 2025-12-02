@@ -12,8 +12,7 @@ import (
 
 const HEARTBEAT_SECONDS = 3
 
-// QueueManager manages RabbitMQ connections and queue operations using a Pipeline architecture
-// The pipeline separates network I/O (few consumers) from processing (many processors)
+// QueueManager manages RabbitMQ connections and queue operations
 type QueueManager struct {
 	host       string
 	port       int
@@ -42,7 +41,6 @@ func NewQueueManagerWithWiring(w *common.NodeWiring) *QueueManager {
 	}
 }
 
-// Connect establishes connection to RabbitMQ
 func (qm *QueueManager) Connect() error {
 	var err error
 
@@ -105,7 +103,6 @@ func (qm *QueueManager) Connect() error {
 	return nil
 }
 
-// Disconnect closes RabbitMQ connection
 func (qm *QueueManager) Disconnect() {
 	if qm.Connection != nil && !qm.Connection.IsClosed() {
 		qm.Connection.Close()
@@ -113,7 +110,6 @@ func (qm *QueueManager) Disconnect() {
 	log.Println("action: rabbitmq_disconnect | result: success")
 }
 
-// getQueueName returns the queue name for a given binding index
 func (qm *QueueManager) getQueueName(bindingIndex int) string {
 	b := qm.Wiring.Bindings[bindingIndex]
 
@@ -128,11 +124,7 @@ func (qm *QueueManager) getQueueName(bindingIndex int) string {
 	return qm.Wiring.IndividualQueueName
 }
 
-// StartConsuming starts consuming from configured input queue(s) using the Pipeline architecture
-// The pipeline separates network I/O from processing for better performance:
-// - Few RabbitMQ consumers with high prefetch (network efficient)
-// - Many processing goroutines reading from Go channels (CPU efficient)
-// The callback handles everything: processing, publishing, and ACK/NACK
+// StartConsuming starts consuming from configured input queues.
 func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessage, delivery amqp.Delivery)) error {
 	cfg := common.GetConfig()
 	pipelineConfig := cfg.GetPipelineConfig(qm.Wiring.Role)
@@ -146,7 +138,7 @@ func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessag
 
 	var wg sync.WaitGroup
 
-	// Start a pipeline for each queue binding
+	// Start a pipeline for each queue
 	for i := range qm.Wiring.Bindings {
 		queueName := qm.getQueueName(i)
 
@@ -163,7 +155,6 @@ func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessag
 		qm.pipelines = append(qm.pipelines, pipeline)
 		qm.pipelineMu.Unlock()
 
-		// The callback handles everything: processing, publishing, ACK/NACK
 		if err := pipeline.Start(queueName, callback); err != nil {
 			qm.StopConsuming()
 			return fmt.Errorf("failed to start pipeline for queue %s: %w", queueName, err)
@@ -176,13 +167,12 @@ func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessag
 		}(pipeline)
 	}
 
-	// Wait for all pipelines to complete
 	wg.Wait()
 
 	return nil
 }
 
-// StopConsuming stops all pipelines gracefully
+// StopConsuming stops all pipelines.
 func (qm *QueueManager) StopConsuming() {
 	log.Println("action: stop_consuming | status: stopping_pipelines")
 
@@ -197,7 +187,7 @@ func (qm *QueueManager) StopConsuming() {
 	log.Println("action: stop_consuming | result: success")
 }
 
-// Close closes the connection and stops all pipelines
+// Close closes the connection and stops all pipelines.
 func (qm *QueueManager) Close() error {
 	qm.StopConsuming()
 

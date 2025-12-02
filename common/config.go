@@ -119,19 +119,17 @@ func (c *Config) GetQ4JoinersCount() int {
 }
 
 // PipelineConfig holds configuration for the pipeline architecture
-// Separates network I/O (few goroutines) from processing (many goroutines)
 type PipelineConfig struct {
-	NumConsumers     int // RabbitMQ consumers (recommended: 20-50)
-	ConsumerPrefetch int // Prefetch per consumer (recommended: 50-100)
-	NumProcessors    int // Processing goroutines (can be high: 1000-5000)
-	InputBufferSize  int // Size of consumer->processor channel
+	NumConsumers     int // RabbitMQ consumers
+	ConsumerPrefetch int // Prefetch per consumer
+	NumProcessors    int // Processing goroutines
+	InputBufferSize  int // Buffer size for consumer
 }
 
 // GetPipelineConfig returns the pipeline configuration for a given node role
 func (c *Config) GetPipelineConfig(role NodeRole) *PipelineConfig {
 	section := c.cfg.Section("DEFAULT")
 
-	// Base configuration - sensible defaults
 	config := &PipelineConfig{
 		NumConsumers:     section.Key("PIPELINE_NUM_CONSUMERS").MustInt(20),
 		ConsumerPrefetch: section.Key("PIPELINE_CONSUMER_PREFETCH").MustInt(50),
@@ -139,14 +137,12 @@ func (c *Config) GetPipelineConfig(role NodeRole) *PipelineConfig {
 		InputBufferSize:  section.Key("PIPELINE_INPUT_BUFFER_SIZE").MustInt(1000),
 	}
 
-	// Role-specific overrides for processor count
 	switch role {
 	case RoleAggregateQ2, RoleAggregateQ3, RoleAggregateQ4:
 		config.NumProcessors = section.Key("AGGREGATE_PROCESSOR_COUNT").MustInt(config.NumProcessors)
 	case RoleJoinerQ4U:
 		config.NumProcessors = section.Key("JOINER_Q4_USERS_PROCESSOR_COUNT").MustInt(config.NumProcessors)
 	case RoleJoinerQ2, RoleJoinerQ3, RoleJoinerQ4S:
-		// Joiners that hold state need fewer processors to avoid contention
 		config.NumProcessors = section.Key("SIMPLE_JOINER_PROCESSOR_COUNT").MustInt(100)
 	case RoleFilterYear, RoleFilterHour, RoleFilterAmount,
 		RoleGroupByQ2, RoleGroupByQ3, RoleGroupByQ4:
@@ -166,13 +162,11 @@ func GetConfig() *Config {
 
 // ReloadConfig reloads configuration from file
 func ReloadConfig() *Config {
-	// Reset the sync.Once to allow reinitialization
 	configOnce = sync.Once{}
 	configInstance = nil
 	return GetConfig()
 }
 
-// SetConfigPath allows setting a custom config path for testing
 func SetConfigPath(path string) {
 	configOnce = sync.Once{}
 	configInstance = nil
@@ -223,7 +217,7 @@ type NodeWiring struct {
 // JSON configuration for node wiring
 type WiringConfig struct {
 	Role             string                 `json:"role"`
-	SharedQueueName  string                 `json:"shared_queue_name"` // Queue name for shared consumption (optional)
+	SharedQueueName  string                 `json:"shared_queue_name"`
 	Bindings         []Binding              `json:"bindings"`
 	Outputs          map[string]OutputRoute `json:"outputs"`
 	DeclareExchanges []string               `json:"declare_exchanges"`

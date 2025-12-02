@@ -30,11 +30,9 @@ func processInParallel[T any](
 		numWorkers = numItems
 	}
 
-	// Channels for work distribution and result collection
 	workCh := make(chan []byte, numItems)
 	resultsCh := make(chan T, numWorkers)
 
-	// Start workers
 	var wg sync.WaitGroup
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
@@ -47,19 +45,16 @@ func processInParallel[T any](
 		}()
 	}
 
-	// Send work to workers
 	for _, item := range items {
 		workCh <- item
 	}
 	close(workCh)
 
-	// Wait for workers and close results channel
 	go func() {
 		wg.Wait()
 		close(resultsCh)
 	}()
 
-	// Collect all results
 	var results []T
 	for result := range resultsCh {
 		results = append(results, result)
@@ -68,7 +63,7 @@ func processInParallel[T any](
 	return results
 }
 
-// ProcessAndMerge is a convenience wrapper that processes items and merges results
+// ProcessAndMerge is a wrapper that processes items and merges results
 // - items: slice of data to process
 // - numWorkers: number of concurrent workers (0 uses DEFAULT_PARALLEL_WORKERS)
 // - processFunc: function that processes a single item and returns a result

@@ -349,6 +349,7 @@ services:
     - coffee_net
     volumes:
     - ./config/q2_aggregate.json:/app/config/q2_aggregate.json:ro
+    - ./state/q2_aggregate/node_1:/app/state
   aggregate-node-q3-1:
     container_name: aggregate-node-q3-1
     build: .
@@ -363,6 +364,7 @@ services:
     - coffee_net
     volumes:
     - ./config/q3_aggregate.json:/app/config/q3_aggregate.json:ro
+    - ./state/q3_aggregate/node_1:/app/state
   aggregate-node-q4-1:
     container_name: aggregate-node-q4-1
     build: .
@@ -377,6 +379,7 @@ services:
     - coffee_net
     volumes:
     - ./config/q4_aggregate.json:/app/config/q4_aggregate.json:ro
+    - ./state/q4_aggregate/node_1:/app/state
   joiner-node-q2-1:
     container_name: joiner-node-q2-1
     build: .
@@ -391,6 +394,7 @@ services:
     - coffee_net
     volumes:
     - ./config/q2_join.json:/app/config/q2_join.json:ro
+    - ./state/q2_join/node_1:/app/state
   joiner-node-q3-1:
     container_name: joiner-node-q3-1
     build: .
@@ -405,6 +409,7 @@ services:
     - coffee_net
     volumes:
     - ./config/q3_join.json:/app/config/q3_join.json:ro
+    - ./state/q3_join/node_1:/app/state
   joiner-node-q4-users-1:
     container_name: joiner-node-q4-users-1
     build: .
@@ -419,6 +424,7 @@ services:
     - coffee_net
     volumes:
     - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+    - ./state/q4_join_users/node_1:/app/state
   joiner-node-q4-users-2:
     container_name: joiner-node-q4-users-2
     build: .
@@ -433,6 +439,7 @@ services:
     - coffee_net
     volumes:
     - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+    - ./state/q4_join_users/node_2:/app/state
   joiner-node-q4-users-3:
     container_name: joiner-node-q4-users-3
     build: .
@@ -447,6 +454,7 @@ services:
     - coffee_net
     volumes:
     - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+    - ./state/q4_join_users/node_3:/app/state
   joiner-node-q4-users-4:
     container_name: joiner-node-q4-users-4
     build: .
@@ -461,6 +469,7 @@ services:
     - coffee_net
     volumes:
     - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+    - ./state/q4_join_users/node_4:/app/state
   joiner-node-q4-users-5:
     container_name: joiner-node-q4-users-5
     build: .
@@ -475,6 +484,7 @@ services:
     - coffee_net
     volumes:
     - ./config/q4_join_users.json:/app/config/q4_join_users.json:ro
+    - ./state/q4_join_users/node_5:/app/state
   joiner-node-q4-stores-1:
     container_name: joiner-node-q4-stores-1
     build: .
@@ -489,6 +499,7 @@ services:
     - coffee_net
     volumes:
     - ./config/q4_join_stores.json:/app/config/q4_join_stores.json:ro
+    - ./state/q4_join_stores/node_1:/app/state
 networks:
   coffee_net:
     external: true

@@ -15,8 +15,8 @@ type RecordTransformer func(protocol.Record) protocol.Record
 
 type FilterHandler struct {
 	filter      filters.Filter
-	transformer RecordTransformer    // Optional: transforms records after filtering
-	outputType  protocol.DatasetType // Optional: override output dataset type
+	transformer RecordTransformer    // transforms records after filtering
+	outputType  protocol.DatasetType // override output dataset type
 
 	// Reusable publisher to avoid channel exhaustion
 	pub   *middleware.Publisher
@@ -41,6 +41,11 @@ func NewFilterHandlerWithTransform(filter filters.Filter, transformer RecordTran
 
 func (h *FilterHandler) Name() string {
 	return "transaction_filter_" + h.filter.Name()
+}
+
+// Shutdown for filter handlers (no state to persist)
+func (h *FilterHandler) Shutdown() error {
+	return nil
 }
 
 // startFilterHandler starts the transaction filter handler
@@ -77,7 +82,6 @@ func (tfh *FilterHandler) Handle(batchMessage *protocol.BatchMessage, connection
 
 	filteredRecords := tfh.filterRecords(batchMessage.Records)
 
-	// Transform records if transformer is provided
 	if tfh.transformer != nil {
 		transformedRecords := make([]protocol.Record, 0, len(filteredRecords))
 		for _, record := range filteredRecords {
@@ -86,40 +90,32 @@ func (tfh *FilterHandler) Handle(batchMessage *protocol.BatchMessage, connection
 		filteredRecords = transformedRecords
 	}
 
-	// if len(filteredRecords) == 0 && !batchMessage.EOF {
-	// 	return nil
-	// }
-
 	out := *batchMessage
 	out.Records = filteredRecords
 
-	// Override dataset type if specified
 	if tfh.outputType != 0 {
 		out.DatasetType = tfh.outputType
 	}
 
-	// Use the SHARED publisher (protected by mutex)
 	tfh.pubMu.Lock()
 	err := tfh.pub.SendToDatasetOutputExchanges(&out)
 	tfh.pubMu.Unlock()
 
 	if err != nil {
 		log.Printf("action: node_publish | result: fail | error: %v", err)
-		msg.Nack(false, true) // Reject and requeue
+		msg.Nack(false, true)
 		return err
 	}
 
-	msg.Ack(false) // Acknowledge the message
+	msg.Ack(false)
 
 	return nil
 }
 
-// filterRecords filters records using the configured filter
 func (tfh *FilterHandler) filterRecords(records []protocol.Record) []protocol.Record {
 	var filteredRecords []protocol.Record
 
 	for _, record := range records {
-		// Use the configured filter to determine if record should be kept
 		if tfh.filter.Filter(record) {
 			filteredRecords = append(filteredRecords, record)
 		}

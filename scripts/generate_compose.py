@@ -43,6 +43,23 @@ def make_service_name(node_type: str, idx: int) -> str:
     return f"{node_type}-{idx}"
 
 
+def needs_persistence(role: str) -> bool:
+    return (
+        role.endswith("_aggregate")
+        or role.endswith("_join")
+        or role.endswith("_join_users")
+        or role.endswith("_join_stores")
+    )
+
+
+def get_state_volume(role: str) -> str:
+    if role.endswith("_join_users"):
+        return role.replace("_join_users", "_join_users")
+    elif role.endswith("_join_stores"):
+        return role.replace("_join_stores", "_join_stores")
+    return role
+
+
 def generate_compose(output_file, type_counts):
     compose = {
         "services": {},
@@ -62,12 +79,19 @@ def generate_compose(output_file, type_counts):
                 f"NODE_ROLE={role}",
                 f"NODE_ID={i}",
             ]
+
+            volumes = [f"./config/{role}.json:/app/config/{role}.json:ro"]
+
+            if needs_persistence(role):
+                state_dir = get_state_volume(role)
+                volumes.append(f"./state/{state_dir}/node_{i}:/app/state")
+
             service = {
                 "container_name": svc_name,
                 "build": ".",
                 "environment": env,
                 "networks": ["coffee_net"],
-                "volumes": [f"./config/{role}.json:/app/config/{role}.json:ro"],
+                "volumes": volumes,
             }
             compose["services"][svc_name] = service
 

@@ -27,9 +27,11 @@ func (h *GroupByHandler) Name() string {
 	return "groupby_" + h.groupby.Name()
 }
 
-// StartHandler starts the groupby handler
+func (h *GroupByHandler) Shutdown() error {
+	return nil
+}
+
 func (h *GroupByHandler) StartHandler(queueManager *middleware.QueueManager, clientWg *sync.WaitGroup) error {
-	// Create ONE publisher/channel for this handler and reuse it
 	pub, err := middleware.NewPublisher(queueManager.Connection, queueManager.Wiring)
 	if err != nil {
 		log.Printf("action: create_publisher | result: fail | error: %v", err)
@@ -49,7 +51,6 @@ func (h *GroupByHandler) StartHandler(queueManager *middleware.QueueManager, cli
 	return nil
 }
 
-// Handle processes a transaction batch - groups records and routes to output exchanges
 func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection *amqp091.Connection,
 	wiring *common.NodeWiring, clientWG *sync.WaitGroup, msg amqp091.Delivery) error {
 
@@ -59,7 +60,7 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 	groupedRecords, err := h.groupby.ProcessBatch(batchMessage.Records, batchMessage.EOF)
 	if err != nil {
 		log.Printf("action: groupby_process | groupby: %s | result: fail | error: %v", h.groupby.Name(), err)
-		msg.Nack(false, true) // Reject and requeue
+		msg.Nack(false, true)
 		return err
 	}
 
@@ -67,7 +68,6 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 
 	groupByBatch := h.groupby.NewGroupByBatch(batchIndex, groupedRecords, batchMessage.EOF, batchMessage.ClientID)
 
-	// Use the SHARED publisher (protected by mutex)
 	h.pubMu.Lock()
 	err = h.pub.SendToDatasetOutputExchanges(groupByBatch)
 	h.pubMu.Unlock()
@@ -78,7 +78,7 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 		return err
 	}
 
-	msg.Ack(false) // Acknowledge msg
+	msg.Ack(false)
 
 	return nil
 }

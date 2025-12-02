@@ -1,58 +1,235 @@
 package joiners
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"log"
-	"sync"
+	"strconv"
+	"strings"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
 // Q3Joiner handles joining Q3 aggregate data with store names
 type Q3Joiner struct {
-	// In-memory storage for stores (reference data)
-	stores map[string]*protocol.StoreRecord // key: store_id, value: store record
-	mu     sync.RWMutex                     // mutex for thread-safe access
+	rawReferenceRecords []*protocol.StoreRecord
+	clientID            string
 }
 
-// NewQ3Joiner creates a new Q3Joiner instance
 func NewQ3Joiner() *Q3Joiner {
 	return &Q3Joiner{
-		stores: make(map[string]*protocol.StoreRecord),
+		rawReferenceRecords: make([]*protocol.StoreRecord, 0),
 	}
 }
 
-// Name returns the name of this joiner
 func (j *Q3Joiner) Name() string {
 	return "q3_joiner_stores"
 }
 
-// StoreReferenceDataset stores store reference data for future joins
-func (j *Q3Joiner) StoreReferenceDataset(records []protocol.Record) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-
-	log.Printf("action: q3_store_reference_data | count: %d", len(records))
-
-	for _, record := range records {
-		storeRecord, ok := record.(*protocol.StoreRecord)
-		if !ok {
-			return fmt.Errorf("expected StoreRecord, got %T", record)
-		}
-
-		j.stores[storeRecord.StoreID] = storeRecord
-		log.Printf("action: q3_store_stored | store_id: %s | store_name: %s",
-			storeRecord.StoreID, storeRecord.StoreName)
+// SerializeReferenceRecords directly serializes reference records without intermediate buffer
+func (j *Q3Joiner) SerializeReferenceRecords(records []protocol.Record, batchIndex int) ([]byte, error) {
+	if len(records) == 0 {
+		return nil, nil
 	}
 
-	log.Printf("action: q3_reference_data_stored | total_stores: %d", len(j.stores))
-	return nil
+	var buf bytes.Buffer
+	buf.Grow(len(records)*150 + 20)
+
+	buf.WriteString("BATCH|")
+	buf.WriteString(strconv.Itoa(batchIndex))
+	buf.WriteByte('\n')
+
+	for _, record := range records {
+		store, ok := record.(*protocol.StoreRecord)
+		if !ok {
+			continue
+		}
+
+		buf.WriteString("R|")
+		buf.WriteString(store.StoreID)
+		buf.WriteByte('|')
+		buf.WriteString(store.StoreName)
+		buf.WriteByte('|')
+		buf.WriteString(store.Street)
+		buf.WriteByte('|')
+		buf.WriteString(store.PostalCode)
+		buf.WriteByte('|')
+		buf.WriteString(store.City)
+		buf.WriteByte('|')
+		buf.WriteString(store.State)
+		buf.WriteByte('|')
+		buf.WriteString(store.Latitude)
+		buf.WriteByte('|')
+		buf.WriteString(store.Longitude)
+		buf.WriteByte('\n')
+	}
+
+	return buf.Bytes(), nil
 }
 
-// PerformJoin joins Q3 aggregated data with stored store information
-func (j *Q3Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId string) ([]protocol.Record, error) {
-	j.mu.RLock()
-	defer j.mu.RUnlock()
+// SerializeBufferedBatch directly serializes a buffered batch
+func (j *Q3Joiner) SerializeBufferedBatch(batch *protocol.BatchMessage) ([]byte, error) {
+	if batch == nil || len(batch.Records) == 0 {
+		return nil, nil
+	}
+
+	var buf bytes.Buffer
+	buf.Grow(len(batch.Records) * 100)
+
+	for _, record := range batch.Records {
+		if r, ok := record.(*protocol.Q3AggregatedRecord); ok {
+			buf.WriteString("B|")
+			buf.WriteString(strconv.Itoa(batch.BatchIndex))
+			buf.WriteByte('|')
+			buf.WriteString(strconv.FormatBool(batch.EOF))
+			buf.WriteByte('|')
+			buf.WriteString(batch.ClientID)
+			buf.WriteByte('|')
+			buf.WriteString(r.YearHalf)
+			buf.WriteByte('|')
+			buf.WriteString(r.StoreID)
+			buf.WriteByte('|')
+			buf.WriteString(r.TPV)
+			buf.WriteByte('\n')
+		}
+	}
+
+	return buf.Bytes(), nil
+}
+
+// RestoreBufferedBatches restores buffered batches from disk
+func (j *Q3Joiner) RestoreBufferedBatches(data []byte) ([]protocol.BatchMessage, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	batchRecords := make(map[int][]protocol.Record)
+	batchMetadata := make(map[int]*protocol.BatchMessage)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) == 0 || !strings.HasPrefix(line, "B|") {
+			continue
+		}
+
+		parts := strings.Split(line[2:], "|")
+		if len(parts) != 6 {
+			continue
+		}
+
+		batchIndex, err := strconv.Atoi(parts[0])
+		if err != nil {
+			continue
+		}
+
+		eof, _ := strconv.ParseBool(parts[1])
+		clientID := parts[2]
+
+		if _, exists := batchMetadata[batchIndex]; !exists {
+			batchMetadata[batchIndex] = &protocol.BatchMessage{
+				Type:       protocol.MessageTypeBatch,
+				BatchIndex: batchIndex,
+				EOF:        eof,
+				ClientID:   clientID,
+			}
+		}
+
+		record := &protocol.Q3AggregatedRecord{
+			YearHalf: parts[3],
+			StoreID:  parts[4],
+			TPV:      parts[5],
+		}
+		batchRecords[batchIndex] = append(batchRecords[batchIndex], record)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan q3 joiner buffered batches: %w", err)
+	}
+
+	var batches []protocol.BatchMessage
+	for batchIndex, records := range batchRecords {
+		meta := batchMetadata[batchIndex]
+		batches = append(batches, protocol.BatchMessage{
+			Type:        meta.Type,
+			DatasetType: protocol.DatasetTypeQ3Agg,
+			BatchIndex:  batchIndex,
+			EOF:         meta.EOF,
+			ClientID:    meta.ClientID,
+			Records:     records,
+		})
+	}
+
+	return batches, nil
+}
+
+// restoreState restores reference data from a serialized file
+func (j *Q3Joiner) restoreState(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	if j.rawReferenceRecords == nil {
+		j.rawReferenceRecords = make([]*protocol.StoreRecord, 0)
+	}
+
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) == 0 || !strings.HasPrefix(line, "R|") {
+			continue
+		}
+
+		parts := strings.Split(line[2:], "|")
+		if len(parts) != 8 {
+			continue
+		}
+
+		store := &protocol.StoreRecord{
+			StoreID:    parts[0],
+			StoreName:  parts[1],
+			Street:     parts[2],
+			PostalCode: parts[3],
+			City:       parts[4],
+			State:      parts[5],
+			Latitude:   parts[6],
+			Longitude:  parts[7],
+		}
+		j.rawReferenceRecords = append(j.rawReferenceRecords, store)
+	}
+
+	return scanner.Err()
+}
+
+func (j *Q3Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId string, historicalIncrements [][]byte) ([]protocol.Record, error) {
+	if j.clientID == "" {
+		j.clientID = clientId
+	}
+
+	if len(historicalIncrements) > 0 {
+		log.Printf("action: q3_joiner_load_start | client_id: %s | increments: %d", clientId, len(historicalIncrements))
+
+		for i, incrementData := range historicalIncrements {
+			if len(incrementData) > 0 {
+				if err := j.restoreState(incrementData); err != nil {
+					log.Printf("action: q3_joiner_load_increment | client_id: %s | increment: %d | result: fail | error: %v",
+						clientId, i, err)
+				}
+			}
+		}
+
+		log.Printf("action: q3_joiner_load_complete | client_id: %s | increments_merged: %d | raw_records: %d",
+			clientId, len(historicalIncrements), len(j.rawReferenceRecords))
+	}
+
+	storeIndex := make(map[string]*protocol.StoreRecord, len(j.rawReferenceRecords))
+	for _, store := range j.rawReferenceRecords {
+		storeIndex[store.StoreID] = store
+	}
+
+	log.Printf("action: q3_joiner_index_built | client_id: %s | stores: %d", clientId, len(storeIndex))
 
 	var joinedRecords []protocol.Record
 
@@ -62,11 +239,9 @@ func (j *Q3Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId str
 			return nil, fmt.Errorf("expected Q3AggregatedRecord, got %T", record)
 		}
 
-		// Join aggregated data with store names
-		storeRecord, exists := j.stores[aggRecord.StoreID]
+		storeRecord, exists := storeIndex[aggRecord.StoreID]
 		if !exists {
-			log.Printf("action: q3_join_warning | client_id: %s | store_id: %s | error: store_not_found", clientId, aggRecord.StoreID)
-			continue // Skip records without matching stores
+			continue
 		}
 
 		joinedRecord := &protocol.Q3JoinedRecord{
@@ -75,33 +250,42 @@ func (j *Q3Joiner) PerformJoin(aggregatedRecords []protocol.Record, clientId str
 			TPV:       aggRecord.TPV,
 		}
 		joinedRecords = append(joinedRecords, joinedRecord)
-
-		log.Printf("action: q3_join_success | client_id: %s | year_half: %s | store_id: %s | store_name: %s | tpv: %s",
-			clientId, aggRecord.YearHalf, aggRecord.StoreID, storeRecord.StoreName, aggRecord.TPV)
 	}
 
-	log.Printf("action: q3_join_complete | client_id: %s | total_joined: %d", clientId, len(joinedRecords))
+	log.Printf("action: q3_joiner_join_complete | client_id: %s | input_records: %d | joined_records: %d",
+		clientId, len(aggregatedRecords), len(joinedRecords))
 
 	return joinedRecords, nil
 }
 
-// GetOutputDatasetType returns the dataset type for Q3 joined output
 func (j *Q3Joiner) GetOutputDatasetType() protocol.DatasetType {
 	return protocol.DatasetTypeQ3AggWithName
 }
 
-// AcceptsReferenceType checks if this joiner accepts stores as reference data
 func (j *Q3Joiner) AcceptsReferenceType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeStores
 }
 
-// AcceptsAggregateType checks if this joiner accepts Q3 aggregate data
 func (j *Q3Joiner) AcceptsAggregateType(datasetType protocol.DatasetType) bool {
 	return datasetType == protocol.DatasetTypeQ3Agg
 }
 
-// Cleanup is a no-op for Q3Joiner
-// Stores dataset is tiny (~10 stores) and kept in memory for potential future queries
 func (j *Q3Joiner) Cleanup() error {
+	j.rawReferenceRecords = nil
+	return nil
+}
+
+func (j *Q3Joiner) ShouldCleanupAfterEOF() bool {
+	return false
+}
+
+func (j *Q3Joiner) CacheIncrement(batchIndex int, data []byte) {
+}
+
+func (j *Q3Joiner) GetCachedBatchIndices() map[int]bool {
+	return nil
+}
+
+func (j *Q3Joiner) GetCache() map[int][]byte {
 	return nil
 }

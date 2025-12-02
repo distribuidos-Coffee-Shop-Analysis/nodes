@@ -118,6 +118,40 @@ func (c *Config) GetQ4JoinersCount() int {
 	return section.Key("Q4_JOINERS_COUNT").MustInt(1)
 }
 
+// PipelineConfig holds configuration for the pipeline architecture
+type PipelineConfig struct {
+	NumConsumers     int // RabbitMQ consumers
+	ConsumerPrefetch int // Prefetch per consumer
+	NumProcessors    int // Processing goroutines
+	InputBufferSize  int // Buffer size for consumer
+}
+
+// GetPipelineConfig returns the pipeline configuration for a given node role
+func (c *Config) GetPipelineConfig(role NodeRole) *PipelineConfig {
+	section := c.cfg.Section("DEFAULT")
+
+	config := &PipelineConfig{
+		NumConsumers:     section.Key("PIPELINE_NUM_CONSUMERS").MustInt(20),
+		ConsumerPrefetch: section.Key("PIPELINE_CONSUMER_PREFETCH").MustInt(50),
+		NumProcessors:    section.Key("PIPELINE_NUM_PROCESSORS").MustInt(1000),
+		InputBufferSize:  section.Key("PIPELINE_INPUT_BUFFER_SIZE").MustInt(1000),
+	}
+
+	switch role {
+	case RoleAggregateQ2, RoleAggregateQ3, RoleAggregateQ4:
+		config.NumProcessors = section.Key("AGGREGATE_PROCESSOR_COUNT").MustInt(config.NumProcessors)
+	case RoleJoinerQ4U:
+		config.NumProcessors = section.Key("JOINER_Q4_USERS_PROCESSOR_COUNT").MustInt(config.NumProcessors)
+	case RoleJoinerQ2, RoleJoinerQ3, RoleJoinerQ4S:
+		config.NumProcessors = section.Key("SIMPLE_JOINER_PROCESSOR_COUNT").MustInt(100)
+	case RoleFilterYear, RoleFilterHour, RoleFilterAmount,
+		RoleGroupByQ2, RoleGroupByQ3, RoleGroupByQ4:
+		config.NumProcessors = section.Key("FILTER_GROUPBY_PROCESSOR_COUNT").MustInt(config.NumProcessors)
+	}
+
+	return config
+}
+
 // GetConfig returns the global configuration instance (singleton pattern)
 func GetConfig() *Config {
 	configOnce.Do(func() {
@@ -128,13 +162,11 @@ func GetConfig() *Config {
 
 // ReloadConfig reloads configuration from file
 func ReloadConfig() *Config {
-	// Reset the sync.Once to allow reinitialization
 	configOnce = sync.Once{}
 	configInstance = nil
 	return GetConfig()
 }
 
-// SetConfigPath allows setting a custom config path for testing
 func SetConfigPath(path string) {
 	configOnce = sync.Once{}
 	configInstance = nil
@@ -185,7 +217,7 @@ type NodeWiring struct {
 // JSON configuration for node wiring
 type WiringConfig struct {
 	Role             string                 `json:"role"`
-	SharedQueueName  string                 `json:"shared_queue_name"` // Queue name for shared consumption (optional)
+	SharedQueueName  string                 `json:"shared_queue_name"`
 	Bindings         []Binding              `json:"bindings"`
 	Outputs          map[string]OutputRoute `json:"outputs"`
 	DeclareExchanges []string               `json:"declare_exchanges"`

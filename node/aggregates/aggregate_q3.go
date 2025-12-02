@@ -1,92 +1,127 @@
 package aggregates
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"log"
 	"strconv"
-	"sync"
+	"strings"
 
+	worker "github.com/distribuidos-Coffee-Shop-Analysis/nodes/node/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 )
 
-// Q3Aggregate handles aggregation of Q3 grouped data to accumulate TPV by year_half and store
-type Q3Aggregate struct {
-	mu sync.RWMutex
-
-	// Map to accumulate TPV by year_half + store_id
-	tpvData map[string]float64 // year_half|store_id -> accumulated tpv
-
+type Q3RawRecord struct {
+	YearHalf string
+	StoreID  string
+	TPV      float64
 }
 
-// NewQ3Aggregate creates a new Q3 aggregate processor
+type Q3Aggregate struct {
+	rawRecords []Q3RawRecord
+	clientID   string
+
+	cachedIncrements map[int][]byte
+}
+
 func NewQ3Aggregate() *Q3Aggregate {
 	return &Q3Aggregate{
-		tpvData: make(map[string]float64),
+		rawRecords:       make([]Q3RawRecord, 0),
+		cachedIncrements: make(map[int][]byte),
 	}
+}
+
+func (a *Q3Aggregate) CacheIncrement(batchIndex int, data []byte) {
+	if a.cachedIncrements == nil {
+		a.cachedIncrements = make(map[int][]byte)
+	}
+	a.cachedIncrements[batchIndex] = data
+}
+
+func (a *Q3Aggregate) GetCachedBatchIndices() map[int]bool {
+	result := make(map[int]bool, len(a.cachedIncrements))
+	for idx, data := range a.cachedIncrements {
+		if len(data) > 0 {
+			result[idx] = true
+		}
+	}
+	return result
+}
+
+func (a *Q3Aggregate) GetCache() map[int][]byte {
+	return a.cachedIncrements
+}
+
+func (a *Q3Aggregate) ClearCache() {
+	a.cachedIncrements = make(map[int][]byte)
 }
 
 func (a *Q3Aggregate) Name() string {
 	return "q3_aggregate_tpv_by_year_half_store"
 }
 
-// AccumulateBatch processes and accumulates a batch of Q3 grouped records
-func (a *Q3Aggregate) AccumulateBatch(records []protocol.Record, batchIndex int) error {
+// Format: BATCH|index\n followed by year_half|store_id|tpv\n
+func (a *Q3Aggregate) SerializeRecords(records []protocol.Record, batchIndex int) ([]byte, error) {
+	var buf bytes.Buffer
+	buf.Grow(len(records)*50 + 20)
 
-	// Process records locally without lock (no shared state access)
-	localTPV := make(map[string]float64)
+	buf.WriteString("BATCH|")
+	buf.WriteString(strconv.Itoa(batchIndex))
+	buf.WriteByte('\n')
 
 	for _, record := range records {
 		q3GroupedRecord, ok := record.(*protocol.Q3GroupedRecord)
 		if !ok {
-			log.Printf("action: q3_aggregate_invalid_record | result: warning | "+
+			log.Printf("action: q3_serialize_invalid_record | result: warning | "+
 				"record_type: %T | expected: Q3GroupedRecord", record)
 			continue
 		}
 
-		// Skip records with missing required fields
 		if q3GroupedRecord.YearHalf == "" || q3GroupedRecord.StoreID == "" || q3GroupedRecord.TPV == "" {
-			log.Printf("action: q3_aggregate_filter_null | result: dropped | "+
-				"year_half: %s | store_id: %s | tpv: %s | reason: null_fields",
-				q3GroupedRecord.YearHalf, q3GroupedRecord.StoreID, q3GroupedRecord.TPV)
 			continue
 		}
 
-		// Parse TPV
 		tpv, err := strconv.ParseFloat(q3GroupedRecord.TPV, 64)
 		if err != nil {
-			log.Printf("action: q3_aggregate_parse_tpv | result: error | "+
+			log.Printf("action: q3_serialize_parse_tpv | result: error | "+
 				"year_half: %s | store_id: %s | tpv: %s | error: %v",
 				q3GroupedRecord.YearHalf, q3GroupedRecord.StoreID, q3GroupedRecord.TPV, err)
 			continue
 		}
 
-		// Create aggregate key: year_half|store_id
-		key := fmt.Sprintf("%s|%s", q3GroupedRecord.YearHalf, q3GroupedRecord.StoreID)
-
-		// Accumulate TPV in local map
-		localTPV[key] += tpv
+		buf.WriteString(q3GroupedRecord.YearHalf)
+		buf.WriteByte('|')
+		buf.WriteString(q3GroupedRecord.StoreID)
+		buf.WriteByte('|')
+		buf.WriteString(strconv.FormatFloat(tpv, 'f', 2, 64))
+		buf.WriteByte('\n')
 	}
 
-	// Only lock for the final merge into shared map (critical section)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	for key, tpv := range localTPV {
-		a.tpvData[key] += tpv
-	}
-
-	return nil
+	return buf.Bytes(), nil
 }
 
-// Finalize generates the final aggregated TPV records by year_half and store
 func (a *Q3Aggregate) Finalize(clientId string) ([]protocol.Record, error) {
+	if a.clientID == "" {
+		a.clientID = clientId
+	}
 
-	log.Printf("action: q3_aggregate_finalize | client_id: %s | tpv_entries: %d", clientId, len(a.tpvData))
+	log.Printf("action: q3_aggregate_finalize_start | client_id: %s | raw_records: %d",
+		clientId, len(a.rawRecords))
+
+	tpvData := make(map[string]float64)
+
+	for _, rawRecord := range a.rawRecords {
+		key := fmt.Sprintf("%s|%s", rawRecord.YearHalf, rawRecord.StoreID)
+		tpvData[key] += rawRecord.TPV
+	}
+
+	log.Printf("action: q3_aggregate_finalize_aggregated | client_id: %s | unique_keys: %d",
+		clientId, len(tpvData))
 
 	var result []protocol.Record
 
-	// Convert accumulated data to Q3AggregatedRecord
-	for key, tpv := range a.tpvData {
+	for key, tpv := range tpvData {
 		parts := parseAggregateKey(key)
 		yearHalf, storeID := parts[0], parts[1]
 
@@ -97,9 +132,6 @@ func (a *Q3Aggregate) Finalize(clientId string) ([]protocol.Record, error) {
 		}
 
 		result = append(result, record)
-
-		log.Printf("action: q3_aggregate_emit | client_id: %s | year_half: %s | store_id: %s | tpv: %.2f",
-			clientId, yearHalf, storeID, tpv)
 	}
 
 	log.Printf("action: q3_aggregate_finalize_complete | client_id: %s | total_results: %d", clientId, len(result))
@@ -107,9 +139,88 @@ func (a *Q3Aggregate) Finalize(clientId string) ([]protocol.Record, error) {
 	return result, nil
 }
 
-// GetBatchesToPublish returns a single batch with all aggregated results
-// Q3 doesn't need partitioning, so returns a single batch with empty routing key (uses default from config)
-func (a *Q3Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]BatchToPublish, error) {
+// parseBatchIndexFromIncrement extracts the batch index from the header of an increment
+func parseBatchIndexFromIncrementQ3(data []byte) int {
+	if len(data) == 0 {
+		return -1
+	}
+
+	newlineIdx := bytes.IndexByte(data, '\n')
+	if newlineIdx == -1 {
+		return -1
+	}
+
+	header := string(data[:newlineIdx])
+	if !strings.HasPrefix(header, "BATCH|") {
+		return -1
+	}
+
+	batchIndexStr := header[6:]
+	batchIndex, err := strconv.Atoi(batchIndexStr)
+	if err != nil {
+		return -1
+	}
+
+	return batchIndex
+}
+
+// GetBatchesToPublish merges cached + disk increments, filters duplicates, and returns final results.
+func (a *Q3Aggregate) GetBatchesToPublish(historicalIncrements [][]byte, batchIndex int, clientID string) ([]BatchToPublish, error) {
+	seenBatches := make(map[int]bool)
+	var validIncrements [][]byte
+	cachedUsed := 0
+	cachedEmpty := 0
+	diskUsed := 0
+	diskEmpty := 0
+	diskInvalidHeader := 0
+	duplicatesSkipped := 0
+
+	// 1. Use cached increments
+	for batchIdx, data := range a.cachedIncrements {
+		if len(data) == 0 {
+			cachedEmpty++
+			continue
+		}
+		seenBatches[batchIdx] = true
+		validIncrements = append(validIncrements, data)
+		cachedUsed++
+	}
+
+	// 2. Add disk increments for batches not in cache
+	for i, incrementData := range historicalIncrements {
+		if len(incrementData) == 0 {
+			diskEmpty++
+			continue
+		}
+
+		batchIdx := parseBatchIndexFromIncrementQ3(incrementData)
+		if batchIdx == -1 {
+			diskInvalidHeader++
+			log.Printf("action: q3_merge_skip_invalid | client_id: %s | increment: %d | reason: no_batch_header",
+				clientID, i)
+			continue
+		}
+
+		if seenBatches[batchIdx] {
+			duplicatesSkipped++
+			continue
+		}
+		seenBatches[batchIdx] = true
+		validIncrements = append(validIncrements, incrementData)
+		diskUsed++
+	}
+
+	log.Printf("action: q3_merge_start | client_id: %s | cached: %d | cached_empty: %d | from_disk: %d | disk_empty: %d | disk_invalid_header: %d | duplicates_skipped: %d",
+		clientID, cachedUsed, cachedEmpty, diskUsed, diskEmpty, diskInvalidHeader, duplicatesSkipped)
+
+	// 3. Process valid increments in parallel
+	if len(validIncrements) > 0 {
+		a.mergeIncrementsParallel(validIncrements)
+	}
+
+	log.Printf("action: q3_merge_complete | client_id: %s | total_merged: %d | raw_records: %d",
+		clientID, len(validIncrements), len(a.rawRecords))
+
 	results, err := a.Finalize(clientID)
 	if err != nil {
 		return nil, err
@@ -125,13 +236,59 @@ func (a *Q3Aggregate) GetBatchesToPublish(batchIndex int, clientID string) ([]Ba
 	}, nil
 }
 
-// Cleanup releases all resources held by this aggregate
+func (a *Q3Aggregate) mergeIncrementsParallel(increments [][]byte) {
+	worker.ProcessAndMerge(
+		increments,
+		0,
+		parseQ3Increment,
+		func(results [][]Q3RawRecord) {
+			for _, records := range results {
+				a.rawRecords = append(a.rawRecords, records...)
+			}
+		},
+	)
+}
+
+func parseQ3Increment(data []byte) []Q3RawRecord {
+	if len(data) == 0 {
+		return nil
+	}
+
+	var records []Q3RawRecord
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) == 0 {
+			continue
+		}
+
+		parts := strings.Split(line, "|")
+		if len(parts) != 3 {
+			continue
+		}
+
+		yearHalf := parts[0]
+		storeID := parts[1]
+		tpvValue := parts[2]
+
+		tpv, err := strconv.ParseFloat(tpvValue, 64)
+		if err != nil {
+			continue
+		}
+
+		records = append(records, Q3RawRecord{
+			YearHalf: yearHalf,
+			StoreID:  storeID,
+			TPV:      tpv,
+		})
+	}
+
+	return records
+}
+
 func (a *Q3Aggregate) Cleanup() error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Clear map to release memory
-	a.tpvData = nil
-
+	a.rawRecords = nil
+	a.cachedIncrements = nil
 	return nil
 }

@@ -1,0 +1,129 @@
+package middleware
+
+import (
+	"log"
+	"sync"
+
+	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
+	amqp "github.com/rabbitmq/amqp091-go"
+)
+
+// PipelineConfig holds configuration for the pipeline.
+type PipelineConfig struct {
+	NumConsumers     int // Number of RabbitMQ consumer goroutines
+	ConsumerPrefetch int // Prefetch count per consumer
+
+	NumProcessors int // Number of processing goroutines
+	InputBufferSize int // Size of the consumer->processor channel buffer
+}
+
+// MessagePacket wraps a batch message with its delivery for ACK tracking.
+type MessagePacket struct {
+	Batch    *protocol.BatchMessage
+	Delivery amqp.Delivery
+}
+
+// Pipeline orchestrates the consumer -> processor flow.
+type Pipeline struct {
+	config PipelineConfig
+
+	inputChan chan MessagePacket // Consumer -> Processor
+
+	consumers  []*Consumer
+	processors []*Processor
+
+	shutdownCh   chan struct{}
+	shutdownOnce sync.Once
+	wg           sync.WaitGroup
+
+	connection *amqp.Connection
+}
+
+// NewPipeline creates a new pipeline with the given configuration
+func NewPipeline(config PipelineConfig, connection *amqp.Connection) *Pipeline {
+	return &Pipeline{
+		config:     config,
+		connection: connection,
+		inputChan:  make(chan MessagePacket, config.InputBufferSize),
+		shutdownCh: make(chan struct{}),
+		consumers:  make([]*Consumer, 0, config.NumConsumers),
+		processors: make([]*Processor, 0, config.NumProcessors),
+	}
+}
+
+// ProcessorFunc is the function signature for processing a batch
+// The callback should handle everything: processing, publishing, and ACK/NACK.
+type ProcessorFunc func(batch *protocol.BatchMessage, delivery amqp.Delivery)
+
+// Start initializes and starts all pipeline components
+func (p *Pipeline) Start(queueName string, processorFunc ProcessorFunc) error {
+	log.Printf("action: pipeline_start | consumers: %d | processors: %d | prefetch: %d | buffer: %d",
+		p.config.NumConsumers, p.config.NumProcessors, p.config.ConsumerPrefetch, p.config.InputBufferSize)
+
+	// Monitor connection for unexpected closures
+	connCloseCh := make(chan *amqp.Error, 1)
+	p.connection.NotifyClose(connCloseCh)
+	go func() {
+		select {
+		case amqpErr, ok := <-connCloseCh:
+			if ok && amqpErr != nil {
+				log.Printf("action: pipeline_connection_error | code: %d | reason: %s | server: %v | recover: %v",
+					amqpErr.Code, amqpErr.Reason, amqpErr.Server, amqpErr.Recover)
+			} else if ok {
+				log.Printf("action: pipeline_connection_closed | reason: graceful_close")
+			}
+		case <-p.shutdownCh:
+			// Pipeline is shutting down normally
+		}
+	}()
+
+	// Start processors
+	for i := 0; i < p.config.NumProcessors; i++ {
+		proc := NewProcessor(i, p.inputChan, processorFunc, p.shutdownCh)
+		p.processors = append(p.processors, proc)
+		p.wg.Add(1)
+		go func(pr *Processor) {
+			defer p.wg.Done()
+			pr.Start()
+		}(proc)
+	}
+	log.Printf("action: pipeline_processors_started | count: %d", len(p.processors))
+
+	// Start consumers
+	for i := 0; i < p.config.NumConsumers; i++ {
+		consumer, err := NewConsumer(i, queueName, p.connection, p.inputChan, p.config.ConsumerPrefetch, p.shutdownCh)
+		if err != nil {
+			log.Printf("action: pipeline_create_consumer | consumer_id: %d | result: fail | error: %v", i, err)
+			p.Stop()
+			return err
+		}
+		p.consumers = append(p.consumers, consumer)
+		p.wg.Add(1)
+		go func(c *Consumer) {
+			defer p.wg.Done()
+			c.Start()
+		}(consumer)
+	}
+	log.Printf("action: pipeline_consumers_started | count: %d | queue: %s", len(p.consumers), queueName)
+
+	return nil
+}
+
+// Stop gracefully shuts down the pipeline
+func (p *Pipeline) Stop() {
+	log.Println("action: pipeline_stop | status: initiating_shutdown")
+
+	p.shutdownOnce.Do(func() {
+		close(p.shutdownCh)
+	})
+
+	log.Println("action: pipeline_stop | status: waiting_for_all_components")
+	p.wg.Wait()
+
+	log.Println("action: pipeline_stop | result: success")
+}
+
+// Wait blocks until the pipeline finishes
+func (p *Pipeline) Wait() {
+	p.wg.Wait()
+}

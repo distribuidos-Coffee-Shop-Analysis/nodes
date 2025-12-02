@@ -130,6 +130,7 @@ Temporary Items
 bets.csv
 .data/
 rabbitmq_data/
+state/
 
 docker-compose-generated.yml
 docker-compose-*.yml

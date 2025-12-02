@@ -34,7 +34,6 @@ func (p *Publisher) SendToDatasetOutputExchanges(b *protocol.BatchMessage) error
 	return p.publish(route.Exchange, route.RoutingKey, common.EncodeToByteArray(b))
 }
 
-// SendToDatasetOutputExchangesWithRoutingKey sends a batch message with a custom routing key
 func (p *Publisher) SendToDatasetOutputExchangesWithRoutingKey(b *protocol.BatchMessage, customRoutingKey string) error {
 	route, ok := p.wiring.Outputs[b.DatasetType]
 	if !ok {

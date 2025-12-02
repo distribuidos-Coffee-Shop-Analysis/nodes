@@ -1,0 +1,5 @@
+# Requirements for chaos.py
+# Install with: pip install -r requirements-chaos.txt
+
+docker>=6.0.0,<8.0.0
+PyYAML>=6.0,<7.0

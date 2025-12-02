@@ -3,13 +3,16 @@ package middleware
 import (
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/protocol"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// QueueManager manages RabbitMQ connections and queue operations for the filter node
+const HEARTBEAT_SECONDS = 3
+
+// QueueManager manages RabbitMQ connections and queue operations
 type QueueManager struct {
 	host       string
 	port       int
@@ -17,7 +20,10 @@ type QueueManager struct {
 	password   string
 	Connection *amqp.Connection
 	channel    *amqp.Channel
-	consuming  bool
+
+	// Pipeline components
+	pipelines  []*Pipeline
+	pipelineMu sync.Mutex
 
 	Wiring *common.NodeWiring
 }
@@ -30,18 +36,16 @@ func NewQueueManagerWithWiring(w *common.NodeWiring) *QueueManager {
 		port:      r.Port,
 		username:  r.Username,
 		password:  r.Password,
-		consuming: false,
+		pipelines: make([]*Pipeline, 0),
 		Wiring:    w,
 	}
 }
 
-// Connect establishes connection to RabbitMQ
 func (qm *QueueManager) Connect() error {
 	var err error
 
-	// Create connection string
-	connStr := fmt.Sprintf("amqp://%s:%s@%s:%d/",
-		qm.username, qm.password, qm.host, qm.port)
+	connStr := fmt.Sprintf("amqp://%s:%s@%s:%d/?heartbeat=%d",
+		qm.username, qm.password, qm.host, qm.port, HEARTBEAT_SECONDS)
 
 	qm.Connection, err = amqp.Dial(connStr)
 	if err != nil {
@@ -58,7 +62,7 @@ func (qm *QueueManager) Connect() error {
 	// exchanges
 	for _, ex := range qm.Wiring.DeclareExchs {
 		kind := "direct"
-		if err := qm.channel.ExchangeDeclare(ex, kind, false, false, false, false, nil); err != nil {
+		if err := qm.channel.ExchangeDeclare(ex, kind, true, false, false, false, nil); err != nil {
 			_ = qm.channel.Close()
 			_ = qm.Connection.Close()
 			return fmt.Errorf("declare exchange %s: %w", ex, err)
@@ -66,35 +70,26 @@ func (qm *QueueManager) Connect() error {
 	}
 
 	// Declare and bind queues for each binding
-	// - If UseSharedQueue=true: use SharedQueueName (all nodes consume from same queue)
-	// - If UseSharedQueue=false and multiple bindings: use IndividualQueueName + suffix (e.g., role.nodeID_0, role.nodeID_1)
-	// - If UseSharedQueue=false and single binding: use IndividualQueueName (e.g., role.nodeID)
 	for i, b := range qm.Wiring.Bindings {
 		var queueName string
 
 		if b.UseSharedQueue {
-			// Shared queue: all nodes consume from the same queue
 			queueName = qm.Wiring.SharedQueueName
 		} else {
-			// Individual queue per node
 			if len(qm.Wiring.Bindings) > 1 {
-				// Multiple bindings without shared queue: add suffix to differentiate
 				queueName = fmt.Sprintf("%s_%d", qm.Wiring.IndividualQueueName, i)
 			} else {
-				// Single binding: use base name
 				queueName = qm.Wiring.IndividualQueueName
 			}
 		}
 
-		// Declare queue
-		q, err := qm.channel.QueueDeclare(queueName, false, false, false, false, nil)
+		q, err := qm.channel.QueueDeclare(queueName, true, false, false, false, nil)
 		if err != nil {
 			_ = qm.channel.Close()
 			_ = qm.Connection.Close()
 			return fmt.Errorf("declare queue %s: %w", queueName, err)
 		}
 
-		// Bind queue to exchange
 		if err := qm.channel.QueueBind(q.Name, b.RoutingKey, b.Exchange, false, nil); err != nil {
 			_ = qm.channel.Close()
 			_ = qm.Connection.Close()
@@ -108,7 +103,6 @@ func (qm *QueueManager) Connect() error {
 	return nil
 }
 
-// Disconnect closes RabbitMQ connection
 func (qm *QueueManager) Disconnect() {
 	if qm.Connection != nil && !qm.Connection.IsClosed() {
 		qm.Connection.Close()
@@ -116,114 +110,87 @@ func (qm *QueueManager) Disconnect() {
 	log.Println("action: rabbitmq_disconnect | result: success")
 }
 
-// StartConsuming starts consuming from configured input queue(s) and calls callback for each message
-// For normal nodes: consumes from single queue
-// For joiner nodes: consumes from multiple queues (one per input dataset)
-func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessage, delivery amqp.Delivery)) error {
-	qm.consuming = true
+func (qm *QueueManager) getQueueName(bindingIndex int) string {
+	b := qm.Wiring.Bindings[bindingIndex]
 
-	// Start consuming from each queue
-	for i, b := range qm.Wiring.Bindings {
-		var err error
-
-		dedicatedChannel := qm.channel
-
-		// Determine queue name based on binding configuration
-		var queueName string
-		if b.UseSharedQueue {
-			// Shared queue: all nodes consume from the same queue
-			queueName = qm.Wiring.SharedQueueName
-		} else {
-			// Individual queue per node
-			if len(qm.Wiring.Bindings) > 1 {
-				// Multiple bindings without shared queue: add suffix to differentiate
-				queueName = fmt.Sprintf("%s_%d", qm.Wiring.IndividualQueueName, i)
-			} else {
-				// Single binding: use base name
-				queueName = qm.Wiring.IndividualQueueName
-			}
-		}
-
-		// Create a dedicated channel for each queue (joiner nodes with multiple bindings)
-		if len(qm.Wiring.Bindings) > 1 {
-			dedicatedChannel, err = qm.Connection.Channel()
-			if err != nil {
-				log.Printf("action: create_channel | result: fail | queue: %s | error: %v", queueName, err)
-				return err
-			}
-		}
-
-		// Start consuming from this queue
-		msgs, err := dedicatedChannel.Consume(queueName, "", false, false, false, false, nil)
-		if err != nil {
-			log.Printf("action: start_consuming | result: fail | queue: %s | error: %v", queueName, err)
-			return err
-		}
-
-		log.Printf("action: start_consuming | result: success | queue: %s | shared: %v", queueName, b.UseSharedQueue)
-
-		// Process messages from this queue in a separate goroutine
-		go func(qName string, msgChannel <-chan amqp.Delivery) {
-			for msg := range msgChannel {
-				if !qm.consuming {
-					break
-				}
-
-				// Parse message outside goroutine
-				var batchMessage *protocol.BatchMessage
-				var err error
-
-				// Check message type (first byte)
-				if len(msg.Body) > 0 {
-					msgType := msg.Body[0]
-					if msgType == protocol.MessageTypeBatch {
-						batchMessage, err = protocol.BatchMessageFromData(msg.Body)
-						if err != nil {
-							log.Printf("action: parse_batch | queue: %s | result: fail | error: %v", qName, err)
-							msg.Ack(false) // Ack to remove bad message
-							continue
-						}
-					} else {
-						log.Printf("action: parse_message | queue: %s | result: fail | error: unknown message type: %d", qName, msgType)
-						msg.Ack(false) // Ack to remove bad message
-						continue
-					}
-				} else {
-					log.Printf("action: parse_message | queue: %s | result: fail | error: empty message body", qName)
-					msg.Ack(false) // Ack to remove bad message
-					continue
-				}
-
-				// Launch callback in goroutine with panic recovery
-				go func(batch *protocol.BatchMessage, delivery amqp.Delivery) {
-					defer func() {
-						if r := recover(); r != nil {
-							log.Printf("action: process_batch | result: fail | error: %v", r)
-							delivery.Nack(false, true) // Reject and requeue
-						}
-					}()
-
-					callback(batch, delivery)
-				}(batchMessage, msg)
-			}
-		}(queueName, msgs)
+	if b.UseSharedQueue {
+		return qm.Wiring.SharedQueueName
 	}
 
-	// Keep the function running (blocking) - it will return when consuming stops
-	select {}
+	if len(qm.Wiring.Bindings) > 1 {
+		return fmt.Sprintf("%s_%d", qm.Wiring.IndividualQueueName, bindingIndex)
+	}
+
+	return qm.Wiring.IndividualQueueName
 }
 
-// StopConsuming stops consuming messages
+// StartConsuming starts consuming from configured input queues.
+func (qm *QueueManager) StartConsuming(callback func(batch *protocol.BatchMessage, delivery amqp.Delivery)) error {
+	cfg := common.GetConfig()
+	pipelineConfig := cfg.GetPipelineConfig(qm.Wiring.Role)
+
+	log.Printf("action: start_consuming_pipeline | role: %s | consumers: %d | prefetch: %d | processors: %d | num_queues: %d",
+		qm.Wiring.Role,
+		pipelineConfig.NumConsumers,
+		pipelineConfig.ConsumerPrefetch,
+		pipelineConfig.NumProcessors,
+		len(qm.Wiring.Bindings))
+
+	var wg sync.WaitGroup
+
+	// Start a pipeline for each queue
+	for i := range qm.Wiring.Bindings {
+		queueName := qm.getQueueName(i)
+
+		config := PipelineConfig{
+			NumConsumers:     pipelineConfig.NumConsumers,
+			ConsumerPrefetch: pipelineConfig.ConsumerPrefetch,
+			NumProcessors:    pipelineConfig.NumProcessors,
+			InputBufferSize:  pipelineConfig.InputBufferSize,
+		}
+
+		pipeline := NewPipeline(config, qm.Connection)
+
+		qm.pipelineMu.Lock()
+		qm.pipelines = append(qm.pipelines, pipeline)
+		qm.pipelineMu.Unlock()
+
+		if err := pipeline.Start(queueName, callback); err != nil {
+			qm.StopConsuming()
+			return fmt.Errorf("failed to start pipeline for queue %s: %w", queueName, err)
+		}
+
+		wg.Add(1)
+		go func(p *Pipeline) {
+			defer wg.Done()
+			p.Wait()
+		}(pipeline)
+	}
+
+	wg.Wait()
+
+	return nil
+}
+
+// StopConsuming stops all pipelines.
 func (qm *QueueManager) StopConsuming() {
-	qm.consuming = false
+	log.Println("action: stop_consuming | status: stopping_pipelines")
+
+	qm.pipelineMu.Lock()
+	pipelines := qm.pipelines
+	qm.pipelineMu.Unlock()
+
+	for _, p := range pipelines {
+		p.Stop()
+	}
+
 	log.Println("action: stop_consuming | result: success")
 }
 
-// MessageMiddleware interface methods
-
-// Close closes the connection
+// Close closes the connection and stops all pipelines.
 func (qm *QueueManager) Close() error {
-	qm.consuming = false
+	qm.StopConsuming()
+
 	var err error
 	if qm.Connection != nil && !qm.Connection.IsClosed() {
 		err = qm.Connection.Close()

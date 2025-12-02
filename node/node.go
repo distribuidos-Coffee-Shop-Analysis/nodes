@@ -40,22 +40,38 @@ func (node *Node) Run() error {
 		return err
 	}
 
-	log.Println("action: filter_node_started | result: success | msg: processing transactions...")
+	log.Println("action: node_started | result: success | msg: processing transactions...")
 
 	return nil
 }
 
-// Shutdown gracefully shuts down the filter node
+// Shutdown gracefully shuts down the node
 func (n *Node) Shutdown() {
 	log.Printf("action: node_shutdown | handler: %s | result: start", n.handler.Name())
 
 	if n.queueManager != nil {
-		n.queueManager.StopConsuming() // Stop consuming new messages
-		n.queueManager.Close()         // Close connection to RabbitMQ
+		// Step 1: Stop consuming new messages from RabbitMQ
+		n.queueManager.StopConsuming()
+		log.Printf("action: node_shutdown | step: stop_consuming | result: success")
 	}
 
-	// Wait for all client goroutines to finish
+	// Step 2: Wait for all in-flight messages to finish processing
+	// This ensures all goroutines complete their ACK/NACK before we persist
 	n.clientWg.Wait()
+	log.Printf("action: node_shutdown | step: wait_goroutines | result: success")
+
+	// Step 3: Persist state for stateful handlers (aggregate, joiner)
+	// At this point, all messages have been ACKed and we know the exact state
+	if err := n.handler.Shutdown(); err != nil {
+		log.Printf("action: node_shutdown | step: handler_shutdown | result: fail | error: %v", err)
+	} else {
+		log.Printf("action: node_shutdown | step: handler_shutdown | result: success")
+	}
+
+	// Step 4: Close connection to RabbitMQ
+	if n.queueManager != nil {
+		n.queueManager.Close()
+	}
 
 	log.Printf("action: node_shutdown | handler: %s | result: success", n.handler.Name())
 }

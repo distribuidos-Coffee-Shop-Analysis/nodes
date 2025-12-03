@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/distribuidos-Coffee-Shop-Analysis/nodes/common"
@@ -12,14 +13,50 @@ import (
 )
 
 type GroupByHandler struct {
-	groupby groupbys.GroupBy
-	pub     *middleware.Publisher
-	pubMu   sync.Mutex
+	groupby        groupbys.GroupBy
+	pub            *middleware.Publisher
+	pubMu          sync.Mutex
+	queryType      string
+	aggregateCount int
 }
 
 func NewGroupByHandler(groupby groupbys.GroupBy) *GroupByHandler {
+	cfg := common.GetConfig()
+	queryType := getQueryType(groupby.Name())
+	aggregateCount := getAggregateCountForQueryType(cfg, queryType)
+
 	return &GroupByHandler{
-		groupby: groupby,
+		groupby:        groupby,
+		queryType:      queryType,
+		aggregateCount: aggregateCount,
+	}
+}
+
+func getQueryType(name string) string {
+	nameLower := strings.ToLower(name)
+	if strings.Contains(nameLower, "q2") {
+		return "q2"
+	}
+	if strings.Contains(nameLower, "q3") {
+		return "q3"
+	}
+	if strings.Contains(nameLower, "q4") {
+		return "q4"
+	}
+	return ""
+}
+
+// getAggregateCountForQueryType returns the aggregate count for the given query type
+func getAggregateCountForQueryType(cfg *common.Config, queryType string) int {
+	switch queryType {
+	case "q2":
+		return cfg.GetQ2AggregateCount()
+	case "q3":
+		return cfg.GetQ3AggregateCount()
+	case "q4":
+		return cfg.GetQ4AggregateCount()
+	default:
+		return 1
 	}
 }
 
@@ -65,11 +102,15 @@ func (h *GroupByHandler) Handle(batchMessage *protocol.BatchMessage, connection 
 	}
 
 	batchIndex := batchMessage.BatchIndex
+	clientID := batchMessage.ClientID
 
-	groupByBatch := h.groupby.NewGroupByBatch(batchIndex, groupedRecords, batchMessage.EOF, batchMessage.ClientID)
+	groupByBatch := h.groupby.NewGroupByBatch(batchIndex, groupedRecords, batchMessage.EOF, clientID)
+
+	partition := common.GetAggregatePartition(clientID, h.aggregateCount)
+	routingKey := common.BuildAggregateRoutingKey(h.queryType, partition)
 
 	h.pubMu.Lock()
-	err = h.pub.SendToDatasetOutputExchanges(groupByBatch)
+	err = h.pub.SendToDatasetOutputExchangesWithRoutingKey(groupByBatch, routingKey)
 	h.pubMu.Unlock()
 
 	if err != nil {

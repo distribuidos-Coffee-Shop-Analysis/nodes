@@ -350,6 +350,36 @@ services:
     volumes:
     - ./config/q2_aggregate.json:/app/config/q2_aggregate.json:ro
     - ./state/q2_aggregate/node_1:/app/state
+  aggregate-node-q2-2:
+    container_name: aggregate-node-q2-2
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q2_aggregate
+    - NODE_ID=2
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q2_aggregate.json:/app/config/q2_aggregate.json:ro
+    - ./state/q2_aggregate/node_2:/app/state
+  aggregate-node-q2-3:
+    container_name: aggregate-node-q2-3
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q2_aggregate
+    - NODE_ID=3
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q2_aggregate.json:/app/config/q2_aggregate.json:ro
+    - ./state/q2_aggregate/node_3:/app/state
   aggregate-node-q3-1:
     container_name: aggregate-node-q3-1
     build: .
@@ -365,6 +395,36 @@ services:
     volumes:
     - ./config/q3_aggregate.json:/app/config/q3_aggregate.json:ro
     - ./state/q3_aggregate/node_1:/app/state
+  aggregate-node-q3-2:
+    container_name: aggregate-node-q3-2
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q3_aggregate
+    - NODE_ID=2
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q3_aggregate.json:/app/config/q3_aggregate.json:ro
+    - ./state/q3_aggregate/node_2:/app/state
+  aggregate-node-q3-3:
+    container_name: aggregate-node-q3-3
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q3_aggregate
+    - NODE_ID=3
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q3_aggregate.json:/app/config/q3_aggregate.json:ro
+    - ./state/q3_aggregate/node_3:/app/state
   aggregate-node-q4-1:
     container_name: aggregate-node-q4-1
     build: .
@@ -380,6 +440,36 @@ services:
     volumes:
     - ./config/q4_aggregate.json:/app/config/q4_aggregate.json:ro
     - ./state/q4_aggregate/node_1:/app/state
+  aggregate-node-q4-2:
+    container_name: aggregate-node-q4-2
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_aggregate
+    - NODE_ID=2
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_aggregate.json:/app/config/q4_aggregate.json:ro
+    - ./state/q4_aggregate/node_2:/app/state
+  aggregate-node-q4-3:
+    container_name: aggregate-node-q4-3
+    build: .
+    environment:
+    - RABBITMQ_HOST=rabbitmq
+    - RABBITMQ_PORT=5672
+    - RABBITMQ_USER=admin
+    - RABBITMQ_PASSWORD=admin
+    - NODE_ROLE=q4_aggregate
+    - NODE_ID=3
+    networks:
+    - coffee_net
+    volumes:
+    - ./config/q4_aggregate.json:/app/config/q4_aggregate.json:ro
+    - ./state/q4_aggregate/node_3:/app/state
   joiner-node-q2-1:
     container_name: joiner-node-q2-1
     build: .

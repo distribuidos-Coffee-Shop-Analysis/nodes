@@ -155,6 +155,31 @@ func BuildQ4UserJoinerRoutingKey(partition int) string {
 	return fmt.Sprintf("joiner.%d.q4_agg", partition)
 }
 
+// GetAggregatePartition calculates the aggregate partition for a given clientID
+func GetAggregatePartition(clientID string, aggregateCount int) int {
+	if aggregateCount <= 1 {
+		return 1
+	}
+
+	hash := sha256.Sum256([]byte(clientID))
+	hashHex := hex.EncodeToString(hash[:])
+
+	hashInt := new(big.Int)
+	hashInt.SetString(hashHex, 16)
+
+	aggregateCountBig := big.NewInt(int64(aggregateCount))
+	partition := new(big.Int).Mod(hashInt, aggregateCountBig)
+
+	return int(partition.Int64()) + 1
+}
+
+// BuildAggregateRoutingKey builds the routing key for an Aggregate node based on query type and partition
+// Format: "aggregate.{partition}.{queryType}"
+// Example: partition 1, queryType "q2" -> "aggregate.1.q2"
+func BuildAggregateRoutingKey(queryType string, partition int) string {
+	return fmt.Sprintf("aggregate.%d.%s", partition, queryType)
+}
+
 // NormalizeUserID removes trailing ".0" from user_id if present and trims whitespace
 // This handles cases where user_id might come as "14202.0" instead of "14202"
 // ensuring consistency between transaction user_ids (floats) and user table user_ids (ints)

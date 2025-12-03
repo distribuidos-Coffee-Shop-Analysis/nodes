@@ -5,7 +5,7 @@
     {
       "exchange": "q4_grouped_exchange",
       "routing_key": "",
-      "use_shared_queue": true
+      "use_shared_queue": false
     }
   ],
   "outputs": {

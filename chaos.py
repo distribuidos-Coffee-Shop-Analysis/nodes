@@ -165,7 +165,7 @@ def main():
 
     all_targets = load_compose_services(compose_path)
 
-    for i in range(1, 4):
+    for i in range(2, 4):
         all_targets.append(
             {
                 "service": f"coordinator-{i}",

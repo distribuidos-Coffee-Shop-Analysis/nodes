@@ -118,6 +118,24 @@ func (c *Config) GetQ4JoinersCount() int {
 	return section.Key("Q4_JOINERS_COUNT").MustInt(1)
 }
 
+// GetQ2AggregateCount returns the number of Q2 aggregate nodes for partitioning
+func (c *Config) GetQ2AggregateCount() int {
+	section := c.cfg.Section("DEFAULT")
+	return section.Key("Q2_AGGREGATE_COUNT").MustInt(1)
+}
+
+// GetQ3AggregateCount returns the number of Q3 aggregate nodes for partitioning
+func (c *Config) GetQ3AggregateCount() int {
+	section := c.cfg.Section("DEFAULT")
+	return section.Key("Q3_AGGREGATE_COUNT").MustInt(1)
+}
+
+// GetQ4AggregateCount returns the number of Q4 aggregate nodes for partitioning
+func (c *Config) GetQ4AggregateCount() int {
+	section := c.cfg.Section("DEFAULT")
+	return section.Key("Q4_AGGREGATE_COUNT").MustInt(1)
+}
+
 // PipelineConfig holds configuration for the pipeline architecture
 type PipelineConfig struct {
 	NumConsumers     int // RabbitMQ consumers
@@ -274,6 +292,25 @@ func BuildWiringFromConfig(configPath string, nodeID string) (*NodeWiring, error
 					log.Printf("action: build_wiring | role: %s | node_id: %s | partition: %d | exchange: %s | routing_key: %s (unchanged)",
 						config.Role, nodeID, partition, binding.Exchange, updatedBindings[i].RoutingKey)
 				}
+			}
+			bindings = updatedBindings
+		} else {
+			log.Printf("action: build_wiring | role: %s | node_id: %s | result: fail | error: invalid NODE_ID for partition",
+				config.Role, nodeID)
+		}
+	} else if config.Role == "q2_aggregate" || config.Role == "q3_aggregate" || config.Role == "q4_aggregate" {
+		partition := NodeIDToPartition(nodeID)
+		if partition != -1 {
+			// Extract query type from role (q2, q3, q4)
+			queryType := config.Role[:2]
+
+			updatedBindings := make([]Binding, len(bindings))
+			for i, binding := range bindings {
+				updatedBindings[i] = binding
+				// Set routing key: aggregate.{partition}.{queryType}
+				updatedBindings[i].RoutingKey = BuildAggregateRoutingKey(queryType, partition)
+				log.Printf("action: build_wiring | role: %s | node_id: %s | partition: %d | exchange: %s | routing_key: %s",
+					config.Role, nodeID, partition, binding.Exchange, updatedBindings[i].RoutingKey)
 			}
 			bindings = updatedBindings
 		} else {

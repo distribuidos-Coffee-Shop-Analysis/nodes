@@ -521,6 +521,37 @@ func (h *AggregateHandler) Shutdown() error {
 	return nil
 }
 
+// OnCleanup removes client state when a client disconnects unexpectedly
+// This implements the CleanableHandler interface from middleware.QueueManager
+func (h *AggregateHandler) OnCleanup(clientID string) {
+	log.Printf("action: aggregate_cleanup_received | client_id: %s | result: start", clientID)
+
+	h.statesMu.RLock()
+	state, exists := h.states[clientID]
+	h.statesMu.RUnlock()
+
+	if !exists {
+		log.Printf("action: aggregate_cleanup | client_id: %s | result: skipped | reason: client_not_found", clientID)
+		return
+	}
+
+	// Acquire state lock to safely check and cleanup
+	state.mu.Lock()
+	batchesProcessed := len(state.seenBatchIndices)
+	eofReceived := state.eofReceived
+	finalizeCompleted := state.finalizeCompleted
+	state.mu.Unlock()
+
+	log.Printf("action: aggregate_cleanup | client_id: %s | aggregate: %s | "+
+		"batches_processed: %d | eof_received: %t | finalize_completed: %t",
+		clientID, state.aggregate.Name(), batchesProcessed, eofReceived, finalizeCompleted)
+
+	// Cleanup client state (removes from memory and disk)
+	h.cleanupClientState(clientID, state)
+
+	log.Printf("action: aggregate_cleanup | client_id: %s | result: success", clientID)
+}
+
 // Helper methods for AggregateClientState
 
 func (s *AggregateClientState) hasAllBatchesUpTo(maxIndex int) bool {

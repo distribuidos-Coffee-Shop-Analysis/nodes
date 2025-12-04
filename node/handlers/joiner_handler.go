@@ -595,3 +595,39 @@ func (h *JoinerHandler) checkPendingFinalizes() {
 		}
 	}
 }
+
+// OnCleanup removes client state when a client disconnects unexpectedly
+// This implements the CleanableHandler interface from middleware.QueueManager
+func (h *JoinerHandler) OnCleanup(clientID string) {
+	log.Printf("action: joiner_cleanup_received | client_id: %s | result: start", clientID)
+
+	h.statesMu.RLock()
+	state, exists := h.states[clientID]
+	h.statesMu.RUnlock()
+
+	if !exists {
+		log.Printf("action: joiner_cleanup | client_id: %s | result: skipped | reason: client_not_found", clientID)
+		return
+	}
+
+	// Acquire state lock to safely check and cleanup
+	state.mu.Lock()
+	referenceDataComplete := state.referenceDatasetComplete
+	finalizeStarted := state.finalizeStarted
+	finalizeCompleted := state.finalizeCompleted
+	state.mu.Unlock()
+
+	log.Printf("action: joiner_cleanup | client_id: %s | joiner: %s | "+
+		"reference_complete: %t | finalize_started: %t | finalize_completed: %t",
+		clientID, state.joiner.Name(), referenceDataComplete, finalizeStarted, finalizeCompleted)
+
+	// Cleanup client state (removes from memory and disk)
+	h.cleanupClientState(clientID, state)
+
+	// Remove from states map
+	h.statesMu.Lock()
+	delete(h.states, clientID)
+	h.statesMu.Unlock()
+
+	log.Printf("action: joiner_cleanup | client_id: %s | result: success", clientID)
+}

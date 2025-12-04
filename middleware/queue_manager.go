@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -11,6 +12,16 @@ import (
 )
 
 const HEARTBEAT_SECONDS = 3
+
+// CleanableHandler defines the interface for handlers that support cleanup operations
+type CleanableHandler interface {
+	OnCleanup(clientID string)
+}
+
+// CleanupMessage represents the JSON structure of cleanup messages
+type CleanupMessage struct {
+	ClientID string `json:"client_id"`
+}
 
 // QueueManager manages RabbitMQ connections and queue operations
 type QueueManager struct {
@@ -201,4 +212,91 @@ func (qm *QueueManager) Close() error {
 		log.Println("action: close | result: success")
 	}
 	return err
+}
+
+// StartCleanupListener starts a goroutine that listens for cleanup signals
+// and calls the handler's OnCleanup method for each client that needs cleanup
+func (qm *QueueManager) StartCleanupListener(handler CleanableHandler) error {
+	// Declare cleanup exchange (fanout, durable)
+	err := qm.channel.ExchangeDeclare(
+		"cleanup_exchange", // name
+		"fanout",           // type
+		true,               // durable
+		false,              // auto-deleted
+		false,              // internal
+		false,              // no-wait
+		nil,                // arguments
+	)
+	if err != nil {
+		log.Printf("action: cleanup_exchange_declare | result: fail | error: %v", err)
+		return fmt.Errorf("failed to declare cleanup exchange: %w", err)
+	}
+
+	// Declare an exclusive, auto-delete queue for this node
+	queue, err := qm.channel.QueueDeclare(
+		"",    // name (empty = server generates unique name)
+		false, // durable (false for exclusive queues)
+		true,  // auto-delete (deleted when consumer disconnects)
+		true,  // exclusive (only this connection can access)
+		false, // no-wait
+		nil,   // arguments
+	)
+	if err != nil {
+		log.Printf("action: cleanup_queue_declare | result: fail | error: %v", err)
+		return fmt.Errorf("failed to declare cleanup queue: %w", err)
+	}
+
+	// Bind queue to cleanup exchange
+	err = qm.channel.QueueBind(
+		queue.Name,         // queue name
+		"",                 // routing key (ignored for fanout)
+		"cleanup_exchange", // exchange
+		false,              // no-wait
+		nil,                // arguments
+	)
+	if err != nil {
+		log.Printf("action: cleanup_queue_bind | result: fail | error: %v", err)
+		return fmt.Errorf("failed to bind cleanup queue: %w", err)
+	}
+
+	log.Printf("action: cleanup_listener_setup | result: success | queue: %s", queue.Name)
+
+	// Start consuming from cleanup queue
+	msgs, err := qm.channel.Consume(
+		queue.Name, // queue
+		"",         // consumer tag (empty = server generates)
+		true,       // auto-ack (we don't need guarantees for cleanup signals)
+		true,       // exclusive
+		false,      // no-local
+		false,      // no-wait
+		nil,        // arguments
+	)
+	if err != nil {
+		log.Printf("action: cleanup_consume | result: fail | error: %v", err)
+		return fmt.Errorf("failed to start consuming cleanup messages: %w", err)
+	}
+
+	// Start goroutine to process cleanup messages
+	go func() {
+		log.Println("action: cleanup_listener_start | result: success | msg: listening for cleanup signals")
+
+		for msg := range msgs {
+			var cleanupMsg CleanupMessage
+			if err := json.Unmarshal(msg.Body, &cleanupMsg); err != nil {
+				log.Printf("action: cleanup_message_decode | result: fail | error: %v", err)
+				continue
+			}
+
+			log.Printf("action: cleanup_received | result: processing | client_id: %s", cleanupMsg.ClientID)
+
+			// Call handler's cleanup method
+			handler.OnCleanup(cleanupMsg.ClientID)
+
+			log.Printf("action: cleanup_processed | result: success | client_id: %s", cleanupMsg.ClientID)
+		}
+
+		log.Println("action: cleanup_listener_end | result: success | msg: cleanup listener stopped")
+	}()
+
+	return nil
 }

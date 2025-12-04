@@ -32,3 +32,24 @@ Para limpiar los contenedores:
 ```sh
 make docker-compose-down
 ```
+
+## Chaos Distribuido
+
+Nuestra propia implementacion del Chaos Monkey: lo llamamos Chaos Distribuido porque queriamos ponerle un nombre diferente. El Chaos recibe y lee el archivo `docker-compose.yaml` para determinar de manera dinamica los nodos que estan levantados en el sistema, y ademas instanciamos el Chaos pasandole el nombre de los containers de los nodos `coordinators` para que pueda tirar estos tambien. Es un script de Python muy simple que corre dentro de un container y cuyo unico proposito es que cada un tiempo T configurable (por ejemplo 10 segundos) hace `SIGKILL` a un nodo del sistema. 
+
+Para correrlo tenemos dos modos:
+
+1. Correr Chaos con todos los nodos del sistema:
+```sh
+make run-chaos
+```
+
+2. Correr Chaos unicamente para los nodos que mantienen estado (Aggregates y Joiners):
+```sh
+make run-chaos-stateful
+```
+
+Luego para eliminar los containers:
+```sh
+make stop-chaos
+``` 

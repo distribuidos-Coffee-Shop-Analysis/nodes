@@ -34,6 +34,17 @@ func (node *Node) Run() error {
 		return err
 	}
 
+	// Start cleanup listener if handler implements CleanableHandler interface
+	if cleanable, ok := node.handler.(interface{ OnCleanup(string) }); ok {
+		if err := node.queueManager.StartCleanupListener(cleanable); err != nil {
+			log.Printf("action: start_cleanup_listener | result: fail | error: %v", err)
+			return err
+		}
+		log.Printf("action: start_cleanup_listener | result: success | handler: %s", node.handler.Name())
+	} else {
+		log.Printf("action: start_cleanup_listener | result: skipped | handler: %s | reason: handler does not implement cleanup", node.handler.Name())
+	}
+
 	// Start handler depending on its type
 	if err := node.handler.StartHandler(node.queueManager, &node.clientWg); err != nil {
 		log.Printf("action: start_transaction_filter_handler | result: fail | error: %v", err)

@@ -31,7 +31,8 @@ func main() {
 
 	handler := node.NewHandler(nodeConfig.Role)
 	// Create filter node
-	node := node.NewNode(handler, middleware.NewQueueManagerWithWiring(wiring))
+	queueManager := middleware.NewQueueManagerWithWiring(wiring)
+	node := node.NewNode(handler, queueManager)
 
 	// Set up signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)

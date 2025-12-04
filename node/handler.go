@@ -33,6 +33,12 @@ type Handler interface {
 	Shutdown() error
 }
 
+// CleanableHandler is an optional interface that handlers can implement
+// to support cleanup of client-specific state when a client disconnects
+type CleanableHandler interface {
+	OnCleanup(clientID string)
+}
+
 func NewHandler(role common.NodeRole) Handler {
 	switch role {
 	case common.RoleFilterYear:

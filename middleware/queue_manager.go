@@ -265,7 +265,7 @@ func (qm *QueueManager) StartCleanupListener(handler CleanableHandler) error {
 	msgs, err := qm.channel.Consume(
 		queue.Name, // queue
 		"",         // consumer tag (empty = server generates)
-		true,       // auto-ack (we don't need guarantees for cleanup signals)
+		false,      // auto-ack
 		true,       // exclusive
 		false,      // no-local
 		false,      // no-wait
@@ -284,15 +284,28 @@ func (qm *QueueManager) StartCleanupListener(handler CleanableHandler) error {
 			var cleanupMsg CleanupMessage
 			if err := json.Unmarshal(msg.Body, &cleanupMsg); err != nil {
 				log.Printf("action: cleanup_message_decode | result: fail | error: %v", err)
+				msg.Ack(false)
 				continue
 			}
 
 			log.Printf("action: cleanup_received | result: processing | client_id: %s", cleanupMsg.ClientID)
 
-			// Call handler's cleanup method
-			handler.OnCleanup(cleanupMsg.ClientID)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("action: cleanup_panic | client_id: %s | error: %v", cleanupMsg.ClientID, r)
+						msg.Nack(false, true)
+					}
+				}()
 
-			log.Printf("action: cleanup_processed | result: success | client_id: %s", cleanupMsg.ClientID)
+				handler.OnCleanup(cleanupMsg.ClientID)
+
+				if err := msg.Ack(false); err != nil {
+					log.Printf("action: cleanup_ack | client_id: %s | result: fail | error: %v", cleanupMsg.ClientID, err)
+				} else {
+					log.Printf("action: cleanup_processed | result: success | client_id: %s", cleanupMsg.ClientID)
+				}
+			}()
 		}
 
 		log.Println("action: cleanup_listener_end | result: success | msg: cleanup listener stopped")

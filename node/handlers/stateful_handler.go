@@ -61,7 +61,6 @@ func (h *StatefulHandlerBase) LoadBatchIndices(clientID string) (map[int]bool, e
 	return h.stateStore.LoadBatchIndicesFromIncrements(clientID)
 }
 
-// DeleteClientState deletes all persisted state for a client
 func (h *StatefulHandlerBase) DeleteClientState(clientID string) {
 	if h.stateStore == nil {
 		return
@@ -75,6 +74,12 @@ func (h *StatefulHandlerBase) DeleteClientState(clientID string) {
 
 	if err := h.stateStore.DeleteAllIncrements(clientID); err != nil {
 		log.Printf("action: increments_delete | client_id: %s | result: fail | error: %v", clientID, err)
+	}
+
+	if err := h.stateStore.DeleteBufferedBatches(clientID); err != nil {
+		if !isNotFound(err) {
+			log.Printf("action: buffered_delete | client_id: %s | result: fail | error: %v", clientID, err)
+		}
 	}
 }
 

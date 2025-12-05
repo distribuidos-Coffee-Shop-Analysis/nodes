@@ -16,7 +16,7 @@ from docker.errors import NotFound, APIError
 
 
 SIGKILL = "SIGKILL"
-SLEEP_INTERVAL = 10
+SLEEP_INTERVAL = 3
 
 
 def timestamp() -> str:

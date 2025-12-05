@@ -382,14 +382,17 @@ func (h *AggregateHandler) finalizeClient(clientID string, state *AggregateClien
 }
 
 func (h *AggregateHandler) cleanupClientState(clientID string, state *AggregateClientState) {
-	if err := state.aggregate.Cleanup(); err != nil {
-		log.Printf("action: aggregate_cleanup | client_id: %s | result: fail | error: %v", clientID, err)
+	if state.aggregate != nil {
+		if err := state.aggregate.Cleanup(); err != nil {
+			log.Printf("action: aggregate_cleanup | client_id: %s | result: fail | error: %v", clientID, err)
+		}
 	}
 
 	h.deleteClientSnapshot(clientID)
 
 	state.mu.Lock()
 	state.seenBatchIndices = nil
+	state.aggregate = nil
 	state.mu.Unlock()
 
 	h.statesMu.Lock()
@@ -521,32 +524,33 @@ func (h *AggregateHandler) Shutdown() error {
 	return nil
 }
 
-// OnCleanup removes client state when a client disconnects unexpectedly
-// This implements the CleanableHandler interface from middleware.QueueManager
 func (h *AggregateHandler) OnCleanup(clientID string) {
-	log.Printf("action: aggregate_cleanup_received | client_id: %s | result: start", clientID)
-
-	h.statesMu.RLock()
+	h.statesMu.Lock()
 	state, exists := h.states[clientID]
-	h.statesMu.RUnlock()
-
 	if !exists {
-		log.Printf("action: aggregate_cleanup | client_id: %s | result: skipped | reason: client_not_found", clientID)
+		h.statesMu.Unlock()
+		h.DeleteClientState(clientID)
+		log.Printf("action: aggregate_cleanup | client_id: %s | result: disk_only | reason: client_not_in_memory", clientID)
 		return
 	}
+	
+	delete(h.states, clientID)
+	h.statesMu.Unlock()
 
-	// Acquire state lock to safely check and cleanup
 	state.mu.Lock()
 	batchesProcessed := len(state.seenBatchIndices)
 	eofReceived := state.eofReceived
 	finalizeCompleted := state.finalizeCompleted
+	aggregateName := ""
+	if state.aggregate != nil {
+		aggregateName = state.aggregate.Name()
+	}
 	state.mu.Unlock()
 
 	log.Printf("action: aggregate_cleanup | client_id: %s | aggregate: %s | "+
 		"batches_processed: %d | eof_received: %t | finalize_completed: %t",
-		clientID, state.aggregate.Name(), batchesProcessed, eofReceived, finalizeCompleted)
+		clientID, aggregateName, batchesProcessed, eofReceived, finalizeCompleted)
 
-	// Cleanup client state (removes from memory and disk)
 	h.cleanupClientState(clientID, state)
 
 	log.Printf("action: aggregate_cleanup | client_id: %s | result: success", clientID)
